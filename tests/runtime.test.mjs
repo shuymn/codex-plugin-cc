@@ -136,9 +136,10 @@ test("setup reports not ready when app-server config read fails", () => {
   assert.match(payload.auth.detail, /config\/read failed for cwd/);
 });
 
-test("review renders a no-findings result from app-server review/start", () => {
+test("review forwards --effort as thread config and renders a no-findings result from app-server review/start", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
   initGitRepo(repo);
   fs.mkdirSync(path.join(repo, "src"));
@@ -147,7 +148,7 @@ test("review renders a no-findings result from app-server review/start", () => {
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = 2;\n");
 
-  const result = run("node", [SCRIPT, "review"], {
+  const result = run("node", [SCRIPT, "review", "--effort", "high"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
@@ -155,6 +156,8 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Reviewed uncommitted changes/);
   assert.match(result.stdout, /No material issues found/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.deepEqual(fakeState.lastThreadStart.config, { model_reasoning_effort: "high" });
 });
 
 test("task runs when the active provider does not require OpenAI login", () => {
@@ -366,9 +369,10 @@ test("review accepts the quoted raw argument style for built-in base-branch revi
   assert.match(result.stdout, /No material issues found/);
 });
 
-test("adversarial review renders structured findings over app-server turn/start", () => {
+test("adversarial review forwards --effort and renders structured findings over app-server turn/start", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir);
   initGitRepo(repo);
   fs.mkdirSync(path.join(repo, "src"));
@@ -377,13 +381,15 @@ test("adversarial review renders structured findings over app-server turn/start"
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
 
-  const result = run("node", [SCRIPT, "adversarial-review"], {
+  const result = run("node", [SCRIPT, "adversarial-review", "--effort", "high"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Missing empty-state guard/);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.effort, "high");
 });
 
 test("adversarial review accepts the same base-branch targeting as review", () => {
@@ -763,7 +769,7 @@ test("task --fresh is treated as routing control and does not leak into the prom
   assert.equal(fakeState.lastTurnStart.prompt, "diagnose the flaky test");
 });
 
-test("task forwards model selection and reasoning effort to app-server turn/start", () => {
+test("task passes model and reasoning effort through to app-server turn/start unchanged", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
   const statePath = path.join(binDir, "fake-codex-state.json");
@@ -773,15 +779,15 @@ test("task forwards model selection and reasoning effort to app-server turn/star
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const result = run("node", [SCRIPT, "task", "--model", "spark", "--effort", "low", "diagnose the failing test"], {
+  const result = run("node", [SCRIPT, "task", "--model", "example-model", "--effort", "max", "diagnose the failing test"], {
     cwd: repo,
     env: buildEnv(binDir)
   });
 
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(fakeState.lastTurnStart.model, "gpt-5.3-codex-spark");
-  assert.equal(fakeState.lastTurnStart.effort, "low");
+  assert.equal(fakeState.lastTurnStart.model, "example-model");
+  assert.equal(fakeState.lastTurnStart.effort, "max");
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {
