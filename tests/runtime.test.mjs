@@ -1,13 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
-import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import {
+  loadBrokerSession,
+  saveBrokerSession,
+  sendBrokerShutdown,
+  teardownBrokerSession
+} from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,6 +21,31 @@ const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
+
+// Keep broker state out of the real plugin data dir so brokers that commands
+// start lazily can be found and stopped after each test.
+const PLUGIN_DATA_DIR = makeTempDir("codex-plugin-data-");
+process.env.CLAUDE_PLUGIN_DATA = PLUGIN_DATA_DIR;
+
+afterEach(async () => {
+  const stateRoot = path.join(PLUGIN_DATA_DIR, "state");
+  if (!fs.existsSync(stateRoot)) {
+    return;
+  }
+
+  for (const entry of fs.readdirSync(stateRoot)) {
+    const brokerFile = path.join(stateRoot, entry, "broker.json");
+    if (!fs.existsSync(brokerFile)) {
+      continue;
+    }
+    const session = JSON.parse(fs.readFileSync(brokerFile, "utf8"));
+    if (session.endpoint) {
+      await sendBrokerShutdown(session.endpoint);
+    }
+    teardownBrokerSession({ ...session, killProcess: terminateProcessTree });
+    fs.unlinkSync(brokerFile);
+  }
+});
 
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   const start = Date.now();
