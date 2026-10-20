@@ -146,8 +146,74 @@ export function upsertJob(cwd, jobPatch) {
   });
 }
 
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function isOrphanedJob(job) {
+  return (job.status === "queued" || job.status === "running") && Number.isFinite(job.pid) && !isProcessAlive(job.pid);
+}
+
+const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+function readJobFileOrNull(cwd, jobId) {
+  try {
+    return readJobFile(resolveJobFile(cwd, jobId));
+  } catch {
+    // A worker killed mid-write leaves a missing or truncated file.
+    return null;
+  }
+}
+
+// A job whose process died (killed shell, crash, reboot) never records its own
+// end, which would block --resume-last and show it as running forever. updatedAt
+// is left alone because resume picks the latest task by it.
+function reconcileOrphanedJobs(cwd, state) {
+  const indexPatches = new Map();
+  for (const job of state.jobs.filter(isOrphanedJob)) {
+    const stored = readJobFileOrNull(cwd, job.id);
+    if (stored && TERMINAL_JOB_STATUSES.has(stored.status)) {
+      // The worker saved its result but died before updating the index.
+      indexPatches.set(job.id, {
+        status: stored.status,
+        phase: stored.phase ?? stored.status,
+        pid: null,
+        threadId: stored.threadId ?? job.threadId ?? null,
+        turnId: stored.turnId ?? job.turnId ?? null,
+        errorMessage: stored.errorMessage ?? null,
+        completedAt: stored.completedAt ?? nowIso()
+      });
+      continue;
+    }
+
+    const patch = {
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage: "The Codex job process exited without recording a result.",
+      completedAt: nowIso()
+    };
+    writeJobFile(cwd, job.id, { ...(stored ?? job), ...patch });
+    indexPatches.set(job.id, patch);
+  }
+  if (indexPatches.size === 0) {
+    return state.jobs;
+  }
+
+  return updateState(cwd, (current) => {
+    current.jobs = current.jobs.map((job) =>
+      indexPatches.has(job.id) && isOrphanedJob(job) ? { ...job, ...indexPatches.get(job.id) } : job
+    );
+  }).jobs;
+}
+
 export function listJobs(cwd) {
-  return loadState(cwd).jobs;
+  return reconcileOrphanedJobs(cwd, loadState(cwd));
 }
 
 export function setConfig(cwd, key, value) {

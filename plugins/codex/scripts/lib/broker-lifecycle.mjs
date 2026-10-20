@@ -110,6 +110,12 @@ async function isBrokerEndpointReady(endpoint) {
   }
 }
 
+// broker.json outlives a broker that exited on its own, so check the endpoint.
+export async function loadLiveBrokerSession(cwd) {
+  const session = loadBrokerSession(cwd);
+  return session && (await isBrokerEndpointReady(session.endpoint)) ? session : null;
+}
+
 export async function ensureBrokerSession(cwd, options = {}) {
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
