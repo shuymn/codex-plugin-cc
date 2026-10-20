@@ -303,7 +303,8 @@ export function renderNativeReviewResult(result, meta) {
     lines.push("Codex review failed.");
   }
 
-  if (stderr) {
+  // On success stderr only carries unrelated Codex logs (e.g. MCP OAuth refresh errors).
+  if (stderr && result.status !== 0) {
     lines.push("", "stderr:", "", "```text", stderr, "```");
   }
 
