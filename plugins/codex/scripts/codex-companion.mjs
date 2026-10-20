@@ -6,10 +6,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { parseArgs, splitRawArgumentPrefix, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
+    ensureCodexAvailable,
     findLatestTaskThread,
     getCodexAuthStatus,
     getCodexAvailability,
@@ -75,13 +76,20 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <effort>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <effort>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <effort>] [prompt]",
+      "  node scripts/codex-companion.mjs review [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <effort>]",
+      "  node scripts/codex-companion.mjs adversarial-review [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <effort>] [focus text]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <effort>] [--prompt-file <path>] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
-      "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
+      "  node scripts/codex-companion.mjs status [job-id] [--all] [--wait] [--timeout-ms <ms>] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
-      "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/codex-companion.mjs cancel [job-id] [--json]",
+      "",
+      "Every command accepts --cwd <dir> (-C) to target another repository or worktree;",
+      "jobs are recorded per repository, so pass the same --cwd to status, result, and cancel.",
+      "review and adversarial-review always run in the foreground and accept --wait/--background",
+      "only for /codex:review; detach them from the calling shell instead.",
+      "task --background detaches a worker; wait for it with status <job-id> --wait.",
+      "A task prompt passed as one argument is kept verbatim after its leading options."
     ].join("\n")
   );
 }
@@ -114,25 +122,37 @@ function normalizeReasoningEffort(effort) {
   return normalized || null;
 }
 
-function normalizeArgv(argv) {
+class HelpRequested extends Error {}
+
+// Slash commands pass "$ARGUMENTS" as one argument, so a single argument is split
+// like a shell would. With keepTrailingText only the leading options are split.
+function normalizeArgv(argv, config) {
   if (argv.length === 1) {
     const [raw] = argv;
     if (!raw || !raw.trim()) {
       return [];
     }
-    return splitRawArgumentString(raw);
+    return config.keepTrailingText ? splitRawArgumentPrefix(raw, config) : splitRawArgumentString(raw);
   }
   return argv;
 }
 
 function parseCommandInput(argv, config = {}) {
-  return parseArgs(normalizeArgv(argv), {
+  const parserConfig = {
     ...config,
+    booleanOptions: [...(config.booleanOptions ?? []), "help"],
     aliasMap: {
       C: "cwd",
+      h: "help",
       ...(config.aliasMap ?? {})
-    }
-  });
+    },
+    strictLeadingOptions: true
+  };
+  const parsed = parseArgs(normalizeArgv(argv, parserConfig), parserConfig);
+  if (parsed.options.help) {
+    throw new HelpRequested();
+  }
+  return parsed;
 }
 
 function resolveCommandCwd(options = {}) {
@@ -166,15 +186,33 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
+const MIN_NODE_VERSION = [18, 18, 0];
+
+function checkNodeVersion(nodeStatus) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(nodeStatus.detail ?? "");
+  if (!nodeStatus.available || !match) {
+    return nodeStatus;
+  }
+  const version = match.slice(1).map(Number);
+  const index = version.findIndex((part, position) => part !== MIN_NODE_VERSION[position]);
+  if (index === -1 || version[index] > MIN_NODE_VERSION[index]) {
+    return nodeStatus;
+  }
+  return { available: false, detail: `${nodeStatus.detail} (requires >= ${MIN_NODE_VERSION.join(".")})` };
+}
+
 async function buildSetupReport(cwd, actionsTaken = []) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
+  const nodeStatus = checkNodeVersion(binaryAvailable("node", ["--version"], { cwd }));
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const codexStatus = getCodexAvailability(cwd);
   const authStatus = await getCodexAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
   const nextSteps = [];
+  if (!nodeStatus.available) {
+    nextSteps.push(`Use Node.js ${MIN_NODE_VERSION.join(".")} or later for this workspace.`);
+  }
   if (!codexStatus.available) {
     nextSteps.push("Install Codex with `npm install -g @openai/codex`.");
   }
@@ -234,13 +272,6 @@ function buildAdversarialReviewPrompt(context, focusText) {
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
     REVIEW_INPUT: context.content
   });
-}
-
-function ensureCodexAvailable(cwd) {
-  const availability = getCodexAvailability(cwd);
-  if (!availability.available) {
-    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
-  }
 }
 
 function buildNativeReviewTarget(target) {
@@ -752,10 +783,12 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    // --wait is accepted for symmetry with review; foreground is already the default.
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "wait"],
     aliasMap: {
       m: "model"
-    }
+    },
+    keepTrailingText: true
   });
 
   const cwd = resolveCommandCwd(options);
@@ -1057,6 +1090,10 @@ async function main() {
 }
 
 main().catch((error) => {
+  if (error instanceof HelpRequested) {
+    printUsage();
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
+import { renderNativeReviewResult, renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(
@@ -56,4 +56,17 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
   assert.doesNotMatch(output, /^\{/);
   assert.match(output, /Codex session ID: thr_123/);
   assert.match(output, /Resume in Codex: codex resume thr_123/);
+});
+
+test("renderNativeReviewResult shows Codex stderr only when the review failed", () => {
+  const meta = { reviewLabel: "Review", targetLabel: "working tree diff" };
+  const stderr = "ERROR codex_rmcp_client::oauth: failed to refresh OAuth tokens";
+
+  const succeeded = renderNativeReviewResult({ status: 0, stdout: "No findings.", stderr }, meta);
+  assert.doesNotMatch(succeeded, /stderr:/);
+  assert.match(succeeded, /No findings\./);
+
+  const failed = renderNativeReviewResult({ status: 1, stdout: "", stderr }, meta);
+  assert.match(failed, /Codex review failed\./);
+  assert.match(failed, /failed to refresh OAuth tokens/);
 });

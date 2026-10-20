@@ -4,6 +4,15 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
+// Running the suite inside a Claude Code session with this plugin installed
+// inherits the session's plugin data dir and session id, which would write test
+// state into the real plugin data dir and hide jobs from session-scoped views.
+for (const name of Object.keys(process.env)) {
+  if (name === "CLAUDE_PLUGIN_DATA" || name === "CLAUDE_ENV_FILE" || name.startsWith("CODEX_COMPANION_")) {
+    delete process.env[name];
+  }
+}
+
 export function makeTempDir(prefix = "codex-plugin-test-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }

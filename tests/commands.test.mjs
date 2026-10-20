@@ -135,7 +135,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /Leave model unset by default/i);
   assert.match(agent, /If the user asks for a concrete model name, pass it through with `--model` as given/i);
   assert.match(agent, /Return the stdout of the `codex-companion` command exactly as-is/i);
-  assert.match(agent, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
+  assert.match(agent, /If the Bash call fails or Codex cannot be invoked, return only the first error line/i);
   assert.match(agent, /codex-prompting/);
   assert.match(agent, /only to tighten the user's request into a better Codex prompt/i);
   assert.match(agent, /Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work/i);
@@ -149,7 +149,7 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(runtimeSkill, /Strip it before calling `task`/i);
   assert.match(runtimeSkill, /If the forwarded request includes `--effort`, pass it through to `task` unchanged/i);
   assert.match(runtimeSkill, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
-  assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return nothing/i);
+  assert.match(runtimeSkill, /If the Bash call fails or Codex cannot be invoked, return only the first error line/i);
   assert.match(readme, /`codex:codex-rescue` subagent/i);
   assert.match(readme, /if you do not pass `--model` or `--effort`, Codex chooses its own defaults/i);
   assert.match(readme, /`--model` and `--effort` are passed to Codex unchanged/i);

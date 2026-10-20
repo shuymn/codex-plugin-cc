@@ -36,9 +36,11 @@ Forwarding rules:
 - `--fresh` means do not add `--resume-last`.
 - If the user is clearly asking to continue prior Codex work in this repository, such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `--resume-last` unless `--fresh` is present.
 - Otherwise forward the task as a fresh `task` run.
+- If the request names a different repository or worktree than the current directory, add `--cwd <that path>` so Codex runs, and is allowed to write, there.
+- Pass a multi-line task text as a single quoted argument or through `--prompt-file`; the companion keeps it verbatim after the leading options.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the stdout of the `codex-companion` command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return nothing.
+- If the Bash call fails or Codex cannot be invoked, return only the first error line from the command output.
 
 Response style:
 

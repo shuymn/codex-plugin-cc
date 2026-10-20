@@ -8,8 +8,18 @@ import process from "node:process";
 import { parseArgs } from "./lib/args.mjs";
 import { BROKER_BUSY_RPC_CODE, CodexAppServerClient } from "./lib/app-server.mjs";
 import { parseBrokerEndpoint } from "./lib/broker-endpoint.mjs";
+import { clearBrokerSession, loadBrokerSession } from "./lib/broker-lifecycle.mjs";
 
 const STREAMING_METHODS = new Set(["turn/start", "review/start", "thread/compact/start"]);
+// SessionEnd only stops the broker of the session's own cwd, so brokers started for
+// other directories would otherwise run until reboot. Exit once no client is connected.
+const IDLE_TIMEOUT_ENV = "CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS";
+const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+function resolveIdleTimeoutMs() {
+  const value = Number(process.env[IDLE_TIMEOUT_ENV]);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_IDLE_TIMEOUT_MS;
+}
 
 function buildStreamThreadIds(method, params, result) {
   const threadIds = new Set();
@@ -69,15 +79,40 @@ async function main() {
   let activeRequestSocket = null;
   let activeStreamSocket = null;
   let activeStreamThreadIds = null;
+  let activeStreamTurn = null;
+  let shuttingDown = false;
   const sockets = new Set();
+  const idleTimeoutMs = resolveIdleTimeoutMs();
+  let idleTimer = null;
+
+  function scheduleIdleShutdown() {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+    if (sockets.size > 0) {
+      return;
+    }
+    idleTimer = setTimeout(async () => {
+      await shutdown(server);
+      process.exit(0);
+    }, idleTimeoutMs);
+  }
 
   function clearSocketOwnership(socket) {
     if (activeRequestSocket === socket) {
       activeRequestSocket = null;
     }
     if (activeStreamSocket === socket) {
+      // Nobody is left to receive this turn's events or record its result, and a
+      // job whose worker is gone is treated as finished, so stop the turn too.
+      if (activeStreamTurn && !shuttingDown) {
+        const turn = activeStreamTurn;
+        Promise.resolve()
+          .then(() => appClient.request("turn/interrupt", turn))
+          .catch(() => {});
+      }
       activeStreamSocket = null;
       activeStreamThreadIds = null;
+      activeStreamTurn = null;
     }
   }
 
@@ -92,6 +127,7 @@ async function main() {
       if (!threadId || !activeStreamThreadIds || activeStreamThreadIds.has(threadId)) {
         activeStreamSocket = null;
         activeStreamThreadIds = null;
+        activeStreamTurn = null;
         if (activeRequestSocket === target) {
           activeRequestSocket = null;
         }
@@ -100,14 +136,22 @@ async function main() {
   }
 
   async function shutdown(server) {
+    shuttingDown = true;
+    // Stop accepting first so a client racing the shutdown starts a new broker
+    // instead of initializing against the closing backend.
+    const closed = new Promise((resolve) => server.close(resolve));
+    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
+      fs.unlinkSync(listenTarget.path);
+    }
+    // A stale broker.json would make SessionEnd kill this pid after it is reused.
+    if (loadBrokerSession(cwd)?.endpoint === endpoint) {
+      clearBrokerSession(cwd);
+    }
     for (const socket of sockets) {
       socket.end();
     }
     await appClient.close().catch(() => {});
-    await new Promise((resolve) => server.close(resolve));
-    if (listenTarget.kind === "unix" && fs.existsSync(listenTarget.path)) {
-      fs.unlinkSync(listenTarget.path);
-    }
+    await closed;
     if (pidFile && fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);
     }
@@ -116,7 +160,12 @@ async function main() {
   appClient.setNotificationHandler(routeNotification);
 
   const server = net.createServer((socket) => {
+    if (shuttingDown) {
+      socket.destroy();
+      return;
+    }
     sockets.add(socket);
+    scheduleIdleShutdown();
     socket.setEncoding("utf8");
     let buffer = "";
 
@@ -203,6 +252,8 @@ async function main() {
           if (isStreaming) {
             activeStreamSocket = socket;
             activeStreamThreadIds = buildStreamThreadIds(message.method, message.params ?? {}, result);
+            const threadId = message.params?.threadId;
+            activeStreamTurn = threadId && result?.turn?.id ? { threadId, turnId: result.turn.id } : null;
           }
           if (activeRequestSocket === socket) {
             activeRequestSocket = null;
@@ -225,11 +276,13 @@ async function main() {
     socket.on("close", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      scheduleIdleShutdown();
     });
 
     socket.on("error", () => {
       sockets.delete(socket);
       clearSocketOwnership(socket);
+      scheduleIdleShutdown();
     });
   });
 
@@ -244,6 +297,7 @@ async function main() {
   });
 
   server.listen(listenTarget.path);
+  scheduleIdleShutdown();
 }
 
 main().catch((error) => {

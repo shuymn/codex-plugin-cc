@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, writeExecutable } from "./helpers.mjs";
 import {
   loadBrokerSession,
   saveBrokerSession,
@@ -43,7 +43,8 @@ afterEach(async () => {
       await sendBrokerShutdown(session.endpoint);
     }
     teardownBrokerSession({ ...session, killProcess: terminateProcessTree });
-    fs.unlinkSync(brokerFile);
+    // The broker removes its own broker.json when it shuts down.
+    fs.rmSync(brokerFile, { force: true });
   }
 });
 
@@ -73,6 +74,41 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
   assert.equal(payload.ready, true);
   assert.match(payload.codex.detail, /advanced runtime available/);
   assert.equal(payload.sessionRuntime.mode, "direct");
+});
+
+test("setup reports not ready when node on PATH is older than the supported minimum", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  writeExecutable(
+    path.join(binDir, "node"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo v16.20.2; exit 0; fi\nexec "${process.execPath}" "$@"\n`
+  );
+
+  const result = run(process.execPath, [SCRIPT, "setup", "--json"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.node.available, false);
+  assert.match(payload.node.detail, /v16\.20\.2 \(requires >= 18\.18\.0\)/);
+});
+
+test("task explains that Codex is missing from PATH when the binary cannot be found", () => {
+  const { repo } = setupTaskRepo();
+  // Node's own bin dir may hold a global Codex install, so expose only node.
+  const binDir = makeTempDir();
+  fs.symlinkSync(process.execPath, path.join(binDir, "node"));
+
+  const result = run(process.execPath, [SCRIPT, "task", "fix the bug"], {
+    cwd: repo,
+    env: { ...process.env, PATH: binDir }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Codex CLI was not found on PATH/);
 });
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
@@ -706,6 +742,106 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
   assert.match(resume.stderr, /No previous Codex task thread was found for this repository\./);
 });
 
+test("a running job whose process is gone is reported as failed and no longer blocks --resume-last", () => {
+  const { repo, binDir } = setupTaskRepo();
+  const exited = run("node", ["-e", "process.stdout.write(String(process.pid))"]);
+  const deadPid = Number(exited.stdout);
+
+  const stateDir = resolveStateDir(repo);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify({
+      version: 1,
+      config: { stopReviewGate: false },
+      jobs: [
+        {
+          id: "task-orphaned",
+          status: "running",
+          phase: "verifying",
+          title: "Codex Task",
+          jobClass: "task",
+          pid: deadPid,
+          threadId: "thr_orphaned",
+          summary: "Task whose worker died",
+          updatedAt: "2026-03-24T20:05:00.000Z"
+        }
+      ]
+    })}\n`,
+    "utf8"
+  );
+
+  fs.writeFileSync(path.join(stateDir, "jobs", "task-orphaned.json"), "{", "utf8");
+
+  const status = run("node", [SCRIPT, "status", "task-orphaned", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(status.status, 0, status.stderr);
+  const job = JSON.parse(status.stdout).job;
+  assert.equal(job.status, "failed");
+  assert.match(job.errorMessage, /exited without recording a result/);
+
+  const resume = run("node", [SCRIPT, "task", "--resume-last", "follow up"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  // The fake Codex does not know the seeded thread; reaching the resume is the point.
+  assert.doesNotMatch(resume.stderr, /still running/);
+  assert.match(resume.stderr, /Resuming thread thr_orphaned/);
+});
+
+test("orphan recovery keeps a saved result and does not make an old task the latest", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+  const deadPid = Number(run("node", ["-e", "process.stdout.write(String(process.pid))"]).stdout);
+
+  const stateDir = resolveStateDir(repo);
+  fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
+  const savedJob = {
+    id: "task-saved",
+    status: "completed",
+    phase: "done",
+    title: "Codex Task",
+    jobClass: "task",
+    threadId: "thr_saved",
+    completedAt: "2026-03-24T20:04:00.000Z",
+    rendered: "Saved result.\n"
+  };
+  fs.writeFileSync(path.join(stateDir, "jobs", "task-saved.json"), JSON.stringify(savedJob), "utf8");
+  fs.writeFileSync(
+    path.join(stateDir, "state.json"),
+    `${JSON.stringify({
+      version: 1,
+      config: { stopReviewGate: false },
+      jobs: [
+        { ...savedJob, status: "running", phase: "finalizing", pid: deadPid, updatedAt: "2026-03-24T20:03:00.000Z" },
+        {
+          id: "task-newer",
+          status: "completed",
+          title: "Codex Task",
+          jobClass: "task",
+          threadId: "thr_1",
+          updatedAt: "2026-03-24T20:05:00.000Z"
+        }
+      ]
+    })}\n`,
+    "utf8"
+  );
+  // Create thr_1 in the fake Codex so the newer task can be resumed.
+  assert.equal(run("node", [SCRIPT, "task", "initial task"], { cwd: repo, env: buildEnv(binDir) }).status, 0);
+  const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+  state.jobs = state.jobs.filter((job) => job.id === "task-saved" || job.id === "task-newer");
+  fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify(state), "utf8");
+
+  const status = run("node", [SCRIPT, "status", "task-saved", "--json"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(status.status, 0, status.stderr);
+  assert.equal(JSON.parse(status.stdout).job.status, "completed");
+
+  const resume = run("node", [SCRIPT, "task", "--resume-last", "follow up"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(resume.status, 0, resume.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).lastTurnStart.threadId, "thr_1");
+});
+
 test("session start hook exports the Claude session id, transcript path, and plugin data dir", () => {
   const repo = makeTempDir();
   const envFile = path.join(makeTempDir(), "claude-env.sh");
@@ -821,6 +957,73 @@ test("task passes model and reasoning effort through to app-server turn/start un
   assert.equal(fakeState.lastTurnStart.effort, "max");
 });
 
+function setupTaskRepo() {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
+}
+
+test("task keeps a single-argument prompt verbatim after its leading options", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+  const prompt = "Don't touch C:\\tmp.\nSecond line mentions --write and --resume-last.";
+
+  const result = run("node", [SCRIPT, "task", `--model example-model ${prompt}`], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.model, "example-model");
+  assert.equal(fakeState.lastTurnStart.prompt, prompt);
+  assert.equal(fakeState.lastTurnStart.threadId, "thr_1");
+});
+
+test("subcommand --help prints usage without starting Codex", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  for (const args of [["task", "--help"], ["adversarial-review", "--help"], ["review", "-h"], ["status", "--help"]]) {
+    const result = run("node", [SCRIPT, ...args], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^Usage:/);
+  }
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test("task rejects unknown leading options instead of sending them as the prompt", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  const result = run("node", [SCRIPT, "task", "--bogus", "fix the bug"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown option --bogus/);
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test("task accepts --wait as the explicit foreground mode", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  const result = run("node", [SCRIPT, "task", "--wait", "fix the bug"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "fix the bug");
+});
+
 test("task logs reasoning summaries and assistant messages to the job log", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();
@@ -925,6 +1128,59 @@ test("task can finish after subagent work even if the parent turn/completed even
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+});
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("a lazily started broker exits on its own once no client is connected", async () => {
+  const { repo, binDir } = setupTaskRepo();
+  const env = { ...buildEnv(binDir), CODEX_COMPANION_BROKER_IDLE_TIMEOUT_MS: "300" };
+
+  const result = run("node", [SCRIPT, "task", "fix the bug"], { cwd: repo, env });
+  assert.equal(result.status, 0, result.stderr);
+
+  const session = loadBrokerSession(repo);
+  assert.ok(session?.pid, "expected the task to start a shared broker");
+  await waitFor(() => !isProcessAlive(session.pid), { timeoutMs: 5000 });
+  assert.equal(fs.existsSync(session.pidFile), false);
+  assert.equal(loadBrokerSession(repo), null);
+
+  // A broker.json left by a killed broker must not be trusted either.
+  saveBrokerSession(repo, session);
+  const setup = run("node", [SCRIPT, "setup", "--json"], { cwd: repo, env });
+  assert.equal(setup.status, 0, setup.stderr);
+  assert.equal(JSON.parse(setup.stdout).auth.loggedIn, true);
+});
+
+test("the broker interrupts a turn whose client disconnected", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir, "interruptible-slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const child = spawn(process.execPath, [SCRIPT, "task", "long running task"], {
+    cwd: repo,
+    env: buildEnv(binDir),
+    stdio: "ignore"
+  });
+  const readFakeState = () => (fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : {});
+  const turn = await waitFor(() => readFakeState().lastTurnStart);
+  assert.ok(loadBrokerSession(repo), "expected the task to run through the shared broker");
+
+  child.kill("SIGKILL");
+  const interrupt = await waitFor(() => readFakeState().lastInterrupt);
+  assert.equal(interrupt.turnId, turn.turnId);
 });
 
 test("task using the shared broker still completes when Codex spawns subagents", () => {
