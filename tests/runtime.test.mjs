@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, writeExecutable } from "./helpers.mjs";
 import {
   loadBrokerSession,
   saveBrokerSession,
@@ -73,6 +73,41 @@ test("setup reports ready when fake codex is installed and authenticated", () =>
   assert.equal(payload.ready, true);
   assert.match(payload.codex.detail, /advanced runtime available/);
   assert.equal(payload.sessionRuntime.mode, "direct");
+});
+
+test("setup reports not ready when node on PATH is older than the supported minimum", () => {
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  writeExecutable(
+    path.join(binDir, "node"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo v16.20.2; exit 0; fi\nexec "${process.execPath}" "$@"\n`
+  );
+
+  const result = run(process.execPath, [SCRIPT, "setup", "--json"], {
+    cwd: ROOT,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ready, false);
+  assert.equal(payload.node.available, false);
+  assert.match(payload.node.detail, /v16\.20\.2 \(requires >= 18\.18\.0\)/);
+});
+
+test("task explains that Codex is missing from PATH when the binary cannot be found", () => {
+  const { repo } = setupTaskRepo();
+  // Node's own bin dir may hold a global Codex install, so expose only node.
+  const binDir = makeTempDir();
+  fs.symlinkSync(process.execPath, path.join(binDir, "node"));
+
+  const result = run(process.execPath, [SCRIPT, "task", "fix the bug"], {
+    cwd: repo,
+    env: { ...process.env, PATH: binDir }
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Codex CLI was not found on PATH/);
 });
 
 test("setup is ready without npm when Codex is already installed and authenticated", () => {
@@ -819,6 +854,73 @@ test("task passes model and reasoning effort through to app-server turn/start un
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(fakeState.lastTurnStart.model, "example-model");
   assert.equal(fakeState.lastTurnStart.effort, "max");
+});
+
+function setupTaskRepo() {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  return { repo, binDir, statePath: path.join(binDir, "fake-codex-state.json") };
+}
+
+test("task keeps a single-argument prompt verbatim after its leading options", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+  const prompt = "Don't touch C:\\tmp.\nSecond line mentions --write and --resume-last.";
+
+  const result = run("node", [SCRIPT, "task", `--model example-model ${prompt}`], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.model, "example-model");
+  assert.equal(fakeState.lastTurnStart.prompt, prompt);
+  assert.equal(fakeState.lastTurnStart.threadId, "thr_1");
+});
+
+test("subcommand --help prints usage without starting Codex", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  for (const args of [["task", "--help"], ["adversarial-review", "--help"], ["review", "-h"], ["status", "--help"]]) {
+    const result = run("node", [SCRIPT, ...args], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^Usage:/);
+  }
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test("task rejects unknown leading options instead of sending them as the prompt", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  const result = run("node", [SCRIPT, "task", "--bogus", "fix the bug"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown option --bogus/);
+  assert.equal(fs.existsSync(statePath), false);
+});
+
+test("task accepts --wait as the explicit foreground mode", () => {
+  const { repo, binDir, statePath } = setupTaskRepo();
+
+  const result = run("node", [SCRIPT, "task", "--wait", "fix the bug"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "fix the bug");
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {
