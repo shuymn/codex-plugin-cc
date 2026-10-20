@@ -21,6 +21,8 @@ Execution rules:
 - Leave `--effort` unset unless the user explicitly requests a specific effort.
 - Leave model unset by default. Add `--model` only when the user explicitly asks for one.
 - Default to a write-capable Codex run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
+- Codex runs in, and with `--write` can only edit, the repository of the current directory. When the request targets another repository or worktree, add `--cwd <path>`.
+- Put options before the task text. A task text passed as one argument is kept verbatim after the leading options, so newlines and quotes survive and words like `--write` inside it stay text.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -38,4 +40,4 @@ Safety rules:
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Return the stdout of the `task` command exactly as-is.
-- If the Bash call fails or Codex cannot be invoked, return nothing.
+- If the Bash call fails or Codex cannot be invoked, return only the first error line from the command output.

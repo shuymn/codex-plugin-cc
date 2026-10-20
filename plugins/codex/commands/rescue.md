@@ -26,6 +26,8 @@ Execution mode:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" task-resume-candidate --json
 ```
 
+- If the request names a different repository or worktree than the current directory, add `--cwd <that path>` to this check so it looks at the same repository the forwarded `task` will run in.
+
 - If that helper reports `available: true`, use `AskUserQuestion` exactly once to ask whether to continue the current Codex thread or start a new one.
 - The two choices must be:
   - `Continue current Codex thread`
