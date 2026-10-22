@@ -8,7 +8,14 @@ import os from "node:os";
 import path from "node:path";
 
 import { readStdin } from "./lib/args.ts";
-import { APPROVAL_OVERRIDES, CodexNotFoundError, failureReason, runCodex, signalExitCode } from "./lib/codex-exec.ts";
+import {
+  APPROVAL_OVERRIDES,
+  CodexNotFoundError,
+  type CodexRunResult,
+  failureReason,
+  runCodex,
+  signalExitCode,
+} from "./lib/codex-exec.ts";
 import { PLUGIN_ROOT } from "./lib/env.ts";
 import { isReviewGateEnabled } from "./lib/gate-config.ts";
 import { resolveWorkspaceRoot } from "./lib/git.ts";
@@ -18,7 +25,7 @@ import { isRecord } from "./lib/json.ts";
 const GATE_TIMEOUT_MS = 13 * 60 * 1000;
 const MANUAL_HINT = "Run /codex:review --wait manually, or disable the gate with /codex:setup --disable-review-gate.";
 
-type Verdict = { allow: true } | { allow: false; reason: string };
+export type Verdict = { allow: true } | { allow: false; reason: string };
 
 function block(reason: string): Verdict {
   return { allow: false, reason };
@@ -55,6 +62,34 @@ function parseInput(raw: string): Record<string, unknown> {
   }
 }
 
+// Turns a finished gate run into a verdict. Every failure, including Codex
+// processes that could not be stopped, blocks the stop.
+export function verdictFor(result: CodexRunResult, readOutput: () => string): Verdict {
+  if (result.reapError !== null) {
+    return block(`The stop-time Codex review could not stop Codex: ${result.reapError} ${MANUAL_HINT}`);
+  }
+  if (result.timedOut) {
+    return block(`The stop-time Codex review timed out after 13 minutes. ${MANUAL_HINT}`);
+  }
+  if (result.exitCode !== 0) {
+    const reason = failureReason(result);
+    const detail = reason ? `: ${reason}` : "";
+    return block(`The stop-time Codex review failed (exit ${String(result.exitCode)})${detail}. ${MANUAL_HINT}`);
+  }
+  let output = "";
+  try {
+    output = readOutput();
+  } catch {
+    output = "";
+  }
+  return judge(output || result.lastAgentMessage || "");
+}
+
+// The hook's stdout: a block decision, or nothing to let Claude stop.
+export function formatDecision(verdict: Verdict): string | null {
+  return verdict.allow ? null : `${JSON.stringify({ decision: "block", reason: verdict.reason })}\n`;
+}
+
 async function main(): Promise<number> {
   const input = parseInput(await readStdin());
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -80,28 +115,10 @@ async function main(): Promise<number> {
       "-",
     ];
     const result = await runCodex(args, { cwd, stdin: buildPrompt(lastMessage), timeoutMs: GATE_TIMEOUT_MS });
-    if (result.reapError !== null) {
-      process.stderr.write(`codex-plugin: ${result.reapError}\n`);
-      return 1;
-    }
-    if (result.receivedSignal) {
+    if (result.receivedSignal && result.reapError === null) {
       return signalExitCode(result.receivedSignal);
     }
-    if (result.timedOut) {
-      verdict = block(`The stop-time Codex review timed out after 13 minutes. ${MANUAL_HINT}`);
-    } else if (result.exitCode !== 0) {
-      const reason = failureReason(result);
-      const detail = reason ? `: ${reason}` : "";
-      verdict = block(`The stop-time Codex review failed (exit ${String(result.exitCode)})${detail}. ${MANUAL_HINT}`);
-    } else {
-      let output = "";
-      try {
-        output = fs.readFileSync(outputFile, "utf8");
-      } catch {
-        output = result.lastAgentMessage ?? "";
-      }
-      verdict = judge(output || result.lastAgentMessage || "");
-    }
+    verdict = verdictFor(result, () => fs.readFileSync(outputFile, "utf8"));
   } catch (error) {
     if (error instanceof CodexNotFoundError) {
       process.stderr.write("codex-plugin: Codex is not installed, so the review gate was skipped. Run /codex:setup.\n");
@@ -112,18 +129,17 @@ async function main(): Promise<number> {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 
-  if (!verdict.allow) {
-    process.stdout.write(`${JSON.stringify({ decision: "block", reason: verdict.reason })}\n`);
-  }
+  process.stdout.write(formatDecision(verdict) ?? "");
   return 0;
 }
 
-try {
-  process.exitCode = await main();
-} catch (error) {
-  // A crash must not end the turn silently while the gate is on.
-  const message = error instanceof Error ? error.message : String(error);
-  process.stdout.write(
-    `${JSON.stringify({ decision: "block", reason: `The stop-time Codex review crashed: ${message}. ${MANUAL_HINT}` })}\n`,
-  );
+// Runs only as the hook command, not when a test imports the functions above.
+if (import.meta.main) {
+  try {
+    process.exitCode = await main();
+  } catch (error) {
+    // A crash must not end the turn silently while the gate is on.
+    const message = error instanceof Error ? error.message : String(error);
+    process.stdout.write(formatDecision(block(`The stop-time Codex review crashed: ${message}. ${MANUAL_HINT}`)) ?? "");
+  }
 }

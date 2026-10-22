@@ -107,3 +107,30 @@ test("ESRCH from a stop signal means the group is already gone", { timeout: 30_0
     restore();
   }
 });
+
+test(
+  "a grandchild in another group holding the output does not count as a reap failure",
+  { timeout: 30_000 },
+  async () => {
+    const { ready, restore } = useFake("escape");
+    try {
+      const group = spawnCodexGroup(EXEC_ARGS, {
+        cwd: makeTempDir(),
+        interruptGraceMs: 50,
+        terminateGraceMs: 50,
+        reapGraceMs: 300,
+      });
+      group.child.stdin.end("go");
+      // The fake writes "<its pid> <grandchild pid>" once the grandchild runs.
+      const [, grandchildPid] = (await waitForFile(ready)).split(" ").map(Number);
+      assert.ok(grandchildPid);
+      group.stop();
+      const exit = await group.exited;
+      assert.equal(exit.reapError, null);
+      process.kill(grandchildPid, "SIGKILL");
+      assert.ok(await waitUntilGone(grandchildPid));
+    } finally {
+      restore();
+    }
+  },
+);

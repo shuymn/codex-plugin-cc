@@ -12,7 +12,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 export const INTERRUPT_GRACE_MS = 10_000;
 export const TERMINATE_GRACE_MS = 5_000;
 // How long after SIGKILL the group still gets to disappear before the
-// supervisor gives up and reports that it could not reap it.
+// adapter stops waiting and reports that it could not reap it.
 export const REAP_GRACE_MS = 2_000;
 // Bounds the wait for stdout and stderr to close after the group is gone, in
 // case a process that left the group still holds them open.
@@ -69,7 +69,7 @@ export type GroupExit = {
   reapError: string | null;
 };
 
-export type SupervisedGroup = {
+export type CodexGroup = {
   child: ChildProcessWithoutNullStreams;
   stop: () => void;
   exited: Promise<GroupExit>;
@@ -101,7 +101,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function spawnCodexGroup(args: readonly string[], options: GroupOptions): SupervisedGroup {
+export function spawnCodexGroup(args: readonly string[], options: GroupOptions): CodexGroup {
   const child = spawn("codex", args, {
     cwd: options.cwd,
     shell: false,
@@ -118,6 +118,9 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   let stopping = false;
   let reapError: string | null = null;
   let giveUp: (() => void) | null = null;
+  let giveUpTimer: NodeJS.Timeout | undefined;
+  // Set once the group is confirmed gone; only the output streams remain.
+  let groupGone = false;
 
   // ESRCH means the group is already gone; any other failure (EPERM, ...)
   // means it may still be running and is kept as a reap failure.
@@ -152,10 +155,11 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     timers.push(
       setTimeout(() => signalGroup("SIGTERM"), interruptGraceMs),
       setTimeout(() => signalGroup("SIGKILL"), interruptGraceMs + terminateGraceMs),
-      // The bound does not depend on the child's exit event: once SIGKILL has
-      // had reapGraceMs to work, the supervisor stops waiting.
-      setTimeout(() => giveUp?.(), interruptGraceMs + terminateGraceMs + reapGraceMs),
     );
+    // The bound does not depend on the child's exit event: once SIGKILL has
+    // had reapGraceMs to work, the stop ladder gives up waiting for the group.
+    giveUpTimer = setTimeout(() => giveUp?.(), interruptGraceMs + terminateGraceMs + reapGraceMs);
+    timers.push(giveUpTimer);
   };
 
   const onSignal = (signal: NodeJS.Signals): void => {
@@ -209,6 +213,11 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
       resolve({ exitCode, exitSignal, receivedSignal, timedOut, reapError });
     };
     giveUp = () => {
+      // A group that is already gone was reaped, even if a process that left
+      // it still holds the output open; the stream wait has its own bound.
+      if (groupGone || !signalGroup(0)) {
+        return;
+      }
       reapError ??= `the Codex process group ${child.pid ?? "?"} did not exit after SIGKILL; Codex processes may still be running.`;
       finish();
     };
@@ -232,7 +241,12 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
         // Anything left in the group (the launcher's child, or processes
         // Codex started) is stopped too; giveUp bounds this wait.
         for (;;) {
-          if (settled || !signalGroup(0)) {
+          if (settled) {
+            break;
+          }
+          if (!signalGroup(0)) {
+            groupGone = true;
+            clearTimeout(giveUpTimer);
             break;
           }
           stop();

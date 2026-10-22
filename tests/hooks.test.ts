@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { formatDecision, verdictFor } from "../plugins/codex/scripts/stop-review-gate-hook.ts";
 import { type FakeEnv, makeFakeEnv, makeRepo, makeTempDir, PLUGIN_ROOT } from "./helpers.ts";
 
 const SESSION_START = path.join(PLUGIN_ROOT, "scripts", "session-start-hook.ts");
@@ -154,4 +155,30 @@ test("Stop treats unreadable hook input as empty", () => {
   const result = runHook(STOP_GATE, "not json", fake.env, repo);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
+});
+
+test("Stop blocks with the usual JSON when Codex could not be reaped", () => {
+  const verdict = verdictFor(
+    {
+      exitCode: 0,
+      exitSignal: null,
+      receivedSignal: null,
+      timedOut: false,
+      reapError: "the Codex process group 123 did not exit after SIGKILL",
+      errorMessage: null,
+      lastAgentMessage: "ALLOW: fine",
+      stderr: "",
+      threadId: null,
+      callbackError: null,
+    },
+    () => "ALLOW: fine",
+  );
+  assert.equal(verdict.allow, false);
+  const decision = JSON.parse(formatDecision(verdict) ?? "null") as { decision: string; reason: string };
+  assert.equal(decision.decision, "block");
+  assert.match(decision.reason, /could not stop Codex: the Codex process group 123 did not exit after SIGKILL/);
+});
+
+test("Stop prints nothing for an allowed turn", () => {
+  assert.equal(formatDecision({ allow: true }), null);
 });

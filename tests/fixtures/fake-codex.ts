@@ -208,6 +208,21 @@ async function runExec(call: ExecCall): Promise<void> {
   log({ stdin });
 
   const threadId = call.resumeId ?? randomUUID();
+  if (scenario === "escape") {
+    // Leaves a grandchild in its own process group that keeps stdout and
+    // stderr open for a few seconds, then ends on the first signal.
+    const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+      detached: true,
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    process.on("SIGINT", () => process.exit(130));
+    process.on("SIGTERM", () => process.exit(143));
+    if (process.env.FAKE_CODEX_READY_FILE) {
+      fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, `${process.pid} ${grandchild.pid ?? 0}`);
+    }
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (scenario === "slow" || scenario === "ignore-sigint") {
     // `slow` ends on the first signal; `ignore-sigint` behaves like a Codex
     // binary that keeps running after SIGINT and only stops on SIGTERM. The
