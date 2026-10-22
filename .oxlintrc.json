@@ -8,6 +8,11 @@
   "options": {
     "typeAware": true
   },
-  // Legacy .mjs code; the TypeScript rewrite replaces it and removes this exclusion.
-  "ignorePatterns": ["plugins/codex/scripts/", "scripts/", "tests/"]
+  "ignorePatterns": [
+    // Legacy .mjs code; the TypeScript rewrite replaces it and removes these exclusions.
+    "plugins/codex/scripts/**/*.mjs",
+    "plugins/codex/scripts/**/*.d.ts",
+    "scripts/**/*.mjs",
+    "tests/**/*.mjs"
+  ]
 }

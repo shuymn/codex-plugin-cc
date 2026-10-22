@@ -2,10 +2,11 @@
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "printWidth": 120,
   "ignorePatterns": [
-    // Legacy .mjs code; the TypeScript rewrite replaces it and removes these three exclusions.
-    "plugins/codex/scripts/",
-    "scripts/",
-    "tests/",
+    // Legacy .mjs code; the TypeScript rewrite replaces it and removes these exclusions.
+    "plugins/codex/scripts/**/*.mjs",
+    "plugins/codex/scripts/**/*.d.ts",
+    "scripts/**/*.mjs",
+    "tests/**/*.mjs",
     // Prompt Markdown the plugin ships; formatting would move closing tags and reflow lists in the prompts.
     "plugins/**/*.md"
   ]
