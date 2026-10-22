@@ -15,5 +15,8 @@ ghalint = "1"
 lockfile = true
 lockfile_platforms = ["macos-arm64", "linux-x64"]
 locked = true
+# Install npm-backed tools such as the Codex CLI with npm everywhere, whatever
+# installer the local mise defaults to.
+npm.package_manager = "npm"
 # Matches the minimumReleaseAge of the shared Renovate preset.
 minimum_release_age = "3d"
