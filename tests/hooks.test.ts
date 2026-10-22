@@ -288,7 +288,30 @@ test("Stop in a repository it cannot snapshot reviews the working tree against t
   assert.match(prompt, /snapshot of the working tree could not be taken/);
   assert.ok(prompt.includes(`\`git diff ${headTreeOf(fake, repo)}\``), prompt);
   assert.match(prompt, /git ls-files --others --exclude-standard/);
+  // The reason reaches both Codex and the user.
+  assert.match(prompt, /files use a Git filter \(model\.bin\)/);
+  assert.match(
+    stop(fake, repo)?.systemMessage ?? "",
+    /could not snapshot the working tree: files use a Git filter \(model\.bin\)/,
+  );
   assert.equal(stateOf(fake)?.workspaces[repo]?.approvedTree, undefined);
+});
+
+test("Stop blocks and asks to retry when the workspace root cannot be resolved, and SessionStart records nothing", () => {
+  const { fake, repo } = gateRepo();
+  const subdir = path.join(repo, "src");
+  fs.mkdirSync(subdir);
+  // Git fails inside the repository, which is not the same as being outside one.
+  fs.appendFileSync(path.join(repo, ".git", "config"), "[core\nbroken");
+  const output = stop(fake, subdir);
+  assert.equal(output?.decision, "block");
+  assert.match(output?.reason ?? "", /could not find the workspace root/);
+  assert.match(output?.reason ?? "", /Stop again to retry/);
+  assert.equal(fake.readLog().length, 0);
+  assert.equal(stateOf(fake), null);
+
+  assert.equal(runHook(SESSION_START, { session_id: SESSION, cwd: subdir }, fake.env, subdir).status, 0);
+  assert.equal(stateOf(fake), null);
 });
 
 // EARS 14, A2

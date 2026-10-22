@@ -6,7 +6,7 @@
 import { readStdin } from "./lib/args.ts";
 import { appendEnvVar, PLUGIN_DATA_ENV, safeSessionId, SESSION_ID_ENV, TRANSCRIPT_PATH_ENV } from "./lib/env.ts";
 import { isReviewGateEnabled } from "./lib/gate-config.ts";
-import { resolveWorkspaceRoot } from "./lib/git.ts";
+import { GitError, resolveWorkspaceRoot } from "./lib/git.ts";
 import { isRecord } from "./lib/json.ts";
 import { sessionStartTree } from "./lib/snapshot.ts";
 import { recordStartTree } from "./lib/stop-gate-state.ts";
@@ -14,8 +14,20 @@ import { recordStartTree } from "./lib/stop-gate-state.ts";
 function recordGateStart(input: Record<string, unknown>): void {
   const sessionId = safeSessionId(input.session_id);
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const root = resolveWorkspaceRoot(cwd);
-  if (sessionId === null || !isReviewGateEnabled(root)) {
+  if (sessionId === null) {
+    return;
+  }
+  let root: string;
+  try {
+    root = resolveWorkspaceRoot(cwd);
+  } catch (error) {
+    // Recording nothing makes the first stop fall back to HEAD, with a note.
+    if (error instanceof GitError) {
+      return;
+    }
+    throw error;
+  }
+  if (!isReviewGateEnabled(root)) {
     return;
   }
   const tree = sessionStartTree(root);

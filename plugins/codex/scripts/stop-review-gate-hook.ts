@@ -22,8 +22,8 @@ import {
   signalExitCode,
 } from "./lib/codex-exec.ts";
 import { PLUGIN_ROOT, safeSessionId } from "./lib/env.ts";
-import { isReviewGateEnabled } from "./lib/gate-config.ts";
-import { resolveWorkspaceRoot } from "./lib/git.ts";
+import { isReviewGateEnabled, isReviewGateEnabledAnywhere } from "./lib/gate-config.ts";
+import { GitError, resolveWorkspaceRoot } from "./lib/git.ts";
 import { isRecord } from "./lib/json.ts";
 import { interpolate } from "./lib/prompt.ts";
 import { emptyTree, headTree, isTreeId, type Snapshot, takeSnapshot, treeExists } from "./lib/snapshot.ts";
@@ -78,7 +78,8 @@ export function chooseBase(
 export type ReviewScope =
   | { kind: "diff"; base: string; current: string }
   // Inside a repository without a snapshot: the base against the working tree.
-  | { kind: "worktree"; base: string | null }
+  // reason: why there is no snapshot, shown to Codex and the user.
+  | { kind: "worktree"; base: string | null; reason: string }
   | { kind: "outside-git" };
 
 export type ReviewPlan =
@@ -110,7 +111,11 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
   if (snapshot.kind === "failed" || base === null) {
     return {
       kind: "review",
-      scope: { kind: "worktree", base: base?.tree ?? null },
+      scope: {
+        kind: "worktree",
+        base: base?.tree ?? null,
+        reason: snapshot.kind === "failed" ? snapshot.reason : "no base tree could be found",
+      },
       current: null,
       approvable: false,
       submodules: snapshot.kind === "failed" ? snapshot.submodules : [],
@@ -171,11 +176,14 @@ function scopeText(plan: Extract<ReviewPlan, { kind: "review" }>): string {
     );
   } else if (scope.kind === "worktree" && scope.base !== null) {
     lines.push(
-      "A snapshot of the working tree could not be taken, so review the working tree directly.",
+      `A snapshot of the working tree could not be taken (${encodeData(scope.reason)}), so review the working tree directly.`,
       `Review \`git diff ${treeId(scope.base)}\` (the base tree ${treeId(scope.base)} against the working tree) and the untracked files listed by \`git ls-files --others --exclude-standard\`.`,
     );
   } else if (scope.kind === "worktree") {
-    lines.push("Review all uncommitted changes: `git status`, `git diff HEAD`, and the untracked files.");
+    lines.push(
+      `A snapshot of the working tree could not be taken (${encodeData(scope.reason)}).`,
+      "Review all uncommitted changes: `git status`, `git diff HEAD`, and the untracked files.",
+    );
   } else {
     lines.push(
       "The workspace is not a Git repository, so there is no diff.",
@@ -254,9 +262,14 @@ export function decide(
   outcome: ReviewOutcome,
   blocks: number | null,
 ): Decision {
-  const note = plan.baseNote === null ? undefined : baseNoteText(plan.baseNote);
+  const notes = [
+    plan.scope.kind === "worktree"
+      ? `The review gate could not snapshot the working tree: ${plan.scope.reason}. Codex reviewed the working tree directly, and nothing was recorded as approved.`
+      : undefined,
+    plan.baseNote === null ? undefined : baseNoteText(plan.baseNote),
+  ];
   const withNote = (response: HookResponse): HookResponse => {
-    const messages = [response.systemMessage, note].filter((text) => text !== undefined);
+    const messages = [response.systemMessage, ...notes].filter((text) => text !== undefined);
     return messages.length > 0 ? { ...response, systemMessage: capReason(messages.join("\n\n")) } : response;
   };
 
@@ -368,7 +381,26 @@ async function runReview(cwd: string, prompt: string): Promise<RunResult> {
 async function main(): Promise<number> {
   const input = parseInput(await readStdin());
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const root = resolveWorkspaceRoot(cwd);
+  let root: string;
+  try {
+    root = resolveWorkspaceRoot(cwd);
+  } catch (error) {
+    if (!(error instanceof GitError)) {
+      throw error;
+    }
+    // Without the root the gate cannot be known to be off for this workspace,
+    // so block unless it is off everywhere. Not counted toward the limit.
+    if (isReviewGateEnabledAnywhere()) {
+      process.stdout.write(
+        formatResponse({
+          block: capReason(
+            `The stop-time review gate could not find the workspace root: ${error.message}. ${FAILURE_HINT}`,
+          ),
+        }),
+      );
+    }
+    return 0;
+  }
   if (!isReviewGateEnabled(root)) {
     return 0;
   }

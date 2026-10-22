@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { git, type GitResult } from "./git.ts";
+import { git, type GitResult, isNotGitRepository } from "./git.ts";
 
 export type Snapshot =
   | { kind: "tree"; tree: string }
@@ -173,9 +173,7 @@ function rejectSubmodules(submodules: string[]): void {
 // True only when Git confirmed the directory is not in a work tree. Any other
 // failure, such as a broken config, happens inside a repository.
 function isOutsideWorkTree(result: GitResult): boolean {
-  return result.status === 0
-    ? result.stdout.trim() === "false"
-    : result.status === 128 && /not a git repository/.test(result.stderr);
+  return result.status === 0 ? result.stdout.trim() === "false" : isNotGitRepository(result);
 }
 
 export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snapshot {

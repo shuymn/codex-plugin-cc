@@ -30,6 +30,7 @@ import { currentSessionId, PLUGIN_ROOT } from "./lib/env.ts";
 import { isReviewGateEnabled, setReviewGate } from "./lib/gate-config.ts";
 import {
   detectDefaultBranch,
+  git,
   gitToplevel,
   hasUncommittedChanges,
   resolveCommit,
@@ -383,6 +384,23 @@ function firstLine(value: string): string {
   );
 }
 
+// The review gate's snapshot relies on --no-lazy-fetch, added in Git 2.45.
+const MIN_GIT = [2, 45] as const;
+
+// Returns the line for the report and adds a next step when Git is too old
+// or could not be read.
+function checkGitVersion(cwd: string, nextSteps: string[]): string {
+  const result = git(cwd, ["--version"]);
+  const line = result.status === 0 ? firstLine(result.stdout) : "";
+  const match = /^git version (\d+)\.(\d+)/.exec(line);
+  const major = Number(match?.[1] ?? 0);
+  const minor = Number(match?.[2] ?? 0);
+  if (major < MIN_GIT[0] || (major === MIN_GIT[0] && minor < MIN_GIT[1])) {
+    nextSteps.push("Update Git to 2.45 or later; the review gate needs it to snapshot the working tree safely.");
+  }
+  return line || "not found";
+}
+
 async function runSetup(options: Options): Promise<number> {
   const cwd = resolveCwd(options);
   const workspaceRoot = resolveWorkspaceRoot(cwd);
@@ -415,12 +433,14 @@ async function runSetup(options: Options): Promise<number> {
     nextSteps.push("Install the Codex CLI (`npm install -g @openai/codex`), then rerun /codex:setup.");
   }
 
+  const gitLine = checkGitVersion(cwd, nextSteps);
   const gate = isReviewGateEnabled(workspaceRoot) ? "enabled" : "disabled";
   const lines = [
     "# Codex Setup",
     "",
     `- codex: ${codexLine}`,
     `- auth: ${authLine}`,
+    `- git: ${gitLine}`,
     `- review gate: ${gate} for ${workspaceRoot}`,
     "",
     nextSteps.length === 0 ? "Codex is ready." : ["Next steps:", ...nextSteps.map((step) => `- ${step}`)].join("\n"),

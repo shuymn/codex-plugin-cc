@@ -16,6 +16,7 @@ The plugin is a thin adapter over your local Codex CLI. `/codex:review`, `/codex
 
 - **The Codex CLI**, installed and logged in. Install it with `npm install -g @openai/codex`, then run `codex login`. Codex usage counts toward your ChatGPT plan or API key limits.
 - **Node.js 24 or later.** The plugin is written in TypeScript and runs through Node's built-in type stripping. It has no runtime dependencies.
+- **Git 2.45 or later** for the stop-time review gate. `/codex:setup` warns when Git is older.
 
 ## Install
 
