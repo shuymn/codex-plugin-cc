@@ -2,7 +2,7 @@
 
 Use Codex from inside Claude Code to review code or to hand tasks to Codex.
 
-The plugin is a thin adapter over your local Codex CLI. Each command runs `codex exec` once with an explicit sandbox, and Claude Code's own background execution handles long runs and tells you when they finish.
+The plugin is a thin adapter over your local Codex CLI. `/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` each run `codex exec` once with an explicit sandbox, and Claude Code's own background execution handles long runs and tells you when they finish. `/codex:transfer` uses the Codex app server, and `/codex:setup` only checks the CLI.
 
 ## What You Get
 
@@ -127,7 +127,7 @@ Checks whether Codex is installed and logged in, and turns the review gate on or
 /codex:setup --disable-review-gate
 ```
 
-When the review gate is on, a `Stop` hook asks Codex for a read-only review of Claude's previous turn before Claude stops. If Codex answers `BLOCK`, or the review fails or times out, the hook blocks the stop so Claude can address it.
+When the review gate is on, a `Stop` hook asks Codex for a read-only review of Claude's previous turn before Claude stops. If Codex answers `BLOCK`, or the review fails or times out, the hook blocks the stop so Claude can address it. If Codex is not installed, the hook skips the review, prints a note, and lets Claude stop.
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to watch the session.
