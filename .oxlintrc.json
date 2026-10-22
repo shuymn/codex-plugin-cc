@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "options": {
+    "typeAware": true
+  },
+  // Legacy .mjs code; the TypeScript rewrite replaces it and removes this exclusion.
+  "ignorePatterns": ["plugins/codex/scripts/", "scripts/", "tests/"]
+}
