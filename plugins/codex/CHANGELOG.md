@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0
+
+- The stop-time review gate now reviews changes in the working tree instead of Claude's previous turn. It compares Git tree snapshots of the working tree, skips Codex when nothing changed since the last allowed snapshot, and reviews commits made during the session.
+- Codex answers the gate with a structured verdict (`--output-schema`), and blocks only for findings tied to a file and line. The `ALLOW:`/`BLOCK:` first-line answer is gone.
+- After three blocks with findings in a row, the gate lets Claude stop and shows the findings to the user. Failed reviews still block but do not count toward this limit.
+- The gate blocks when the working tree changes while Codex reviews it.
+- A missing Codex is reported as a message to the user instead of on stderr.
+
 ## 2.0.0
 
 The plugin is now a thin TypeScript adapter over `codex exec` with no runtime dependencies. Claude Code's background execution replaces the plugin's own job management.
