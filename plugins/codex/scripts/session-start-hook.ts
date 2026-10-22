@@ -8,7 +8,7 @@ import { appendEnvVar, PLUGIN_DATA_ENV, safeSessionId, SESSION_ID_ENV, TRANSCRIP
 import { isReviewGateEnabled } from "./lib/gate-config.ts";
 import { resolveWorkspaceRoot } from "./lib/git.ts";
 import { isRecord } from "./lib/json.ts";
-import { headTree } from "./lib/snapshot.ts";
+import { sessionStartTree } from "./lib/snapshot.ts";
 import { recordStartTree } from "./lib/stop-gate-state.ts";
 
 function recordGateStart(input: Record<string, unknown>): void {
@@ -18,7 +18,7 @@ function recordGateStart(input: Record<string, unknown>): void {
   if (sessionId === null || !isReviewGateEnabled(root)) {
     return;
   }
-  const tree = headTree(root);
+  const tree = sessionStartTree(root);
   if (tree !== null) {
     recordStartTree(sessionId, root, tree);
   }

@@ -206,7 +206,7 @@ export function buildPrompt(plan: Extract<ReviewPlan, { kind: "review" }>, final
 
 export type ReviewOutcome =
   | { kind: "failed"; reason: string }
-  // after: a snapshot taken once Codex answered, only for an allow of a known tree.
+  // after: a snapshot taken once Codex answered, when the review had one.
   | { kind: "answered"; output: StopGateOutput; after: Snapshot | null };
 
 export type HookResponse = { block?: string; systemMessage?: string };
@@ -267,6 +267,14 @@ export function decide(
       approve: null,
     };
   }
+  // A verdict on a tree that is no longer there decides nothing, not even at
+  // the block limit, and does not count toward it.
+  if (plan.current !== null) {
+    const after = outcome.after;
+    if (after?.kind !== "tree" || after.tree !== plan.current) {
+      return { response: withNote({ block: CHANGED_DURING_REVIEW }), blocks: null, approve: null };
+    }
+  }
   const { output } = outcome;
   if (output.verdict === "block") {
     const findings = formatFindings(output);
@@ -289,12 +297,6 @@ export function decide(
       blocks: 0,
       approve: null,
     };
-  }
-  if (plan.current !== null) {
-    const after = outcome.after;
-    if (after?.kind !== "tree" || after.tree !== plan.current) {
-      return { response: withNote({ block: CHANGED_DURING_REVIEW }), blocks: null, approve: null };
-    }
   }
   return { response: withNote({}), blocks: 0, approve: plan.approvable ? plan.current : null };
 }
@@ -408,13 +410,22 @@ async function main(): Promise<number> {
   }
 
   const lastMessage = typeof input.last_assistant_message === "string" ? input.last_assistant_message.trim() : "";
-  const run = await runReview(cwd, buildPrompt(plan, lastMessage));
+  // Inside Git, Codex runs at the root so the commands the prompt names see
+  // the whole repository.
+  const codexCwd = snapshot.kind === "not-git" ? cwd : root;
+  const run = await runReview(codexCwd, buildPrompt(plan, lastMessage));
   if (run.kind === "exit") {
-    process.stdout.write(run.message === undefined ? "" : formatResponse({ systemMessage: run.message }));
+    if (run.message !== undefined) {
+      // Codex is missing and Claude stops, which ends the run of blocks.
+      if (state !== null && state.blocks !== 0) {
+        save(0, null);
+      }
+      process.stdout.write(formatResponse({ systemMessage: run.message }));
+    }
     return run.code;
   }
   let outcome = run.outcome;
-  if (outcome.kind === "answered" && outcome.output.verdict === "allow" && plan.current !== null) {
+  if (outcome.kind === "answered" && plan.current !== null) {
     outcome = { ...outcome, after: takeSnapshot(root) };
   }
   const decision = decide(plan, outcome, state === null ? null : state.blocks);

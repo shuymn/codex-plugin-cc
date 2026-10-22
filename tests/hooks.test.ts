@@ -226,6 +226,20 @@ test("Stop measures from the session's starting tree, so commits before the firs
   assert.doesNotMatch(lastPrompt(fake), /No baseline was recorded/);
 });
 
+// EARS 15 in a repository without commits
+test("Stop reviews the first commit of a session that started before any commit", () => {
+  const fake = makeFakeEnv();
+  const repo = makeTempDir("codex-plugin-repo-");
+  git(repo, ["init", "-q", "-b", "main"], fake.env);
+  enableGate(fake, repo);
+  runHook(SESSION_START, { session_id: SESSION, cwd: repo }, fake.env, repo);
+  fs.writeFileSync(path.join(repo, "a.ts"), "export {};\n");
+  git(repo, ["add", "a.ts"], fake.env);
+  git(repo, ["commit", "-q", "-m", "first"], fake.env);
+  assert.equal(stop(fake, repo), null);
+  assert.deepEqual(reviewedTrees(fake), { base: EMPTY_TREE, current: headTreeOf(fake, repo) });
+});
+
 // A7
 test("Stop falls back when the approved tree was pruned and says so to Codex and the user", () => {
   const { fake, repo } = gateRepo();
@@ -377,6 +391,34 @@ test("Stop does not allow or approve when the working tree changes during the re
   assert.equal(stateOf(fake), null);
 });
 
+// A1 before the limit
+test("Stop at the block limit does not let Claude stop when the tree changed during the review", () => {
+  const { fake, repo } = gateRepo();
+  writeState(fake, { workspaces: {}, blocks: 3 });
+  fs.writeFileSync(path.join(repo, "README.md"), "edited\n");
+  fake.env.FAKE_CODEX_MESSAGE = BLOCK_ANSWER;
+  fake.env.FAKE_CODEX_TOUCH_FILE = path.join(repo, "README.md");
+  const output = stop(fake, repo);
+  assert.equal(output?.decision, "block");
+  assert.match(output?.reason ?? "", /working tree changed during the stop-time Codex review/);
+  assert.equal(stateOf(fake)?.blocks, 3);
+});
+
+test("Stop from a subdirectory runs Codex at the repository root", () => {
+  const { fake, repo } = gateRepo();
+  const subdir = path.join(repo, "src");
+  fs.mkdirSync(subdir);
+  // A filter attribute forces the review without a snapshot, which lists
+  // untracked files relative to where Codex runs.
+  fs.writeFileSync(path.join(repo, ".gitattributes"), "*.bin filter=lfs\n");
+  fs.writeFileSync(path.join(repo, "model.bin"), "weights\n");
+  fs.writeFileSync(path.join(repo, "untracked-at-root.ts"), "export {};\n");
+  stop(fake, subdir);
+  const [call] = fake.readLog();
+  assert.equal(call?.cwd, repo);
+  assert.match(call?.stdin ?? "", /snapshot of the working tree could not be taken/);
+});
+
 // EARS 10
 test("Stop encodes Claude's final message so it cannot close its data block", () => {
   const { fake, repo } = gateRepo();
@@ -401,14 +443,16 @@ test("Stop without a usable session id reviews every stop and keeps no state", (
   assert.equal(fs.existsSync(path.join(fake.dataDir, "stop-gate")), false);
 });
 
-test("Stop lets the turn end with a setup note when codex is missing", () => {
+test("Stop lets the turn end with a setup note when codex is missing, and resets the block count", () => {
   const fake = makeFakeEnv({ codex: false });
   const repo = makeRepo(fake.env);
   enableGate(fake, repo);
+  writeState(fake, { workspaces: {}, blocks: 3 });
   fs.writeFileSync(path.join(repo, "README.md"), "edited\n");
   const output = stop(fake, repo);
   assert.equal(output?.decision, undefined);
   assert.match(output?.systemMessage ?? "", /\/codex:setup/);
+  assert.equal(stateOf(fake)?.blocks, 0);
 });
 
 test("Stop treats unreadable hook input as empty", () => {
