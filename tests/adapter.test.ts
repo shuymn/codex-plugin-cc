@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -364,6 +365,18 @@ test("task runs outside a Git repository", () => {
 });
 
 // EARS 14
+test("review stops before choosing a target when git status fails", () => {
+  for (const sub of ["review", "adversarial-review"]) {
+    const { fake, repo } = setup();
+    // A corrupt index makes `git status` fail while the repository is still found.
+    fs.writeFileSync(path.join(repo, ".git", "index"), "not an index");
+    const result = runAdapter(sub, "", { env: fake.env, cwd: repo });
+    assert.equal(result.status, 1, `${sub}: ${result.stderr}`);
+    assert.match(result.stderr, /git status failed/);
+    assert.equal(fake.readLog().length, 0, sub);
+  }
+});
+
 test("review with text exits 2 and points to adversarial-review", () => {
   const { fake, repo } = setup();
   const result = runAdapter("review", "focus on auth", { env: fake.env, cwd: repo });
@@ -556,6 +569,26 @@ test("setup reports version, login, and gate state, and toggles the gate", () =>
     runAdapter("setup", "--enable-review-gate --disable-review-gate", { env: fake.env, cwd: repo }).status,
     2,
   );
+});
+
+test("setup reports the Git version and warns when it is older than 2.45", () => {
+  const { fake, repo } = setup();
+  const current = runAdapter("setup", "", { env: fake.env, cwd: repo });
+  assert.match(current.stdout, /^- git: git version \d+\.\d+/m);
+  assert.doesNotMatch(current.stdout, /Git 2\.45/);
+
+  const realGit = spawnSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  const oldGit = makeTempDir();
+  fs.writeFileSync(
+    path.join(oldGit, "git"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.44.0"; exit 0; fi\nexec "${realGit}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  const env = { ...fake.env, PATH: `${oldGit}${path.delimiter}${fake.env.PATH ?? ""}` };
+  const result = runAdapter("setup", "", { env, cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^- git: git version 2\.44\.0/m);
+  assert.match(result.stdout, /Update Git to 2\.45 or later/);
 });
 
 test("setup tells the user to log in or install codex", () => {

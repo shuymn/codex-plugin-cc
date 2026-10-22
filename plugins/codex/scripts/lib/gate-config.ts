@@ -35,6 +35,12 @@ export function isReviewGateEnabled(workspaceRoot: string): boolean {
   return readConfig().workspaces[canonicalWorkspaceRoot(workspaceRoot)] === true;
 }
 
+// Whether the gate is on for any workspace, for when the workspace itself
+// cannot be told.
+export function isReviewGateEnabledAnywhere(): boolean {
+  return Object.keys(readConfig().workspaces).length > 0;
+}
+
 export function setReviewGate(workspaceRoot: string, enabled: boolean): void {
   const config = readConfig();
   const key = canonicalWorkspaceRoot(workspaceRoot);

@@ -19,9 +19,12 @@ export function pluginDataDir(): string {
 }
 
 // Returns null when the id is missing or not safe to use as a file name.
+export function safeSessionId(value: unknown): string | null {
+  return typeof value === "string" && SESSION_ID_PATTERN.test(value) ? value : null;
+}
+
 export function currentSessionId(): string | null {
-  const value = process.env[SESSION_ID_ENV];
-  return value && SESSION_ID_PATTERN.test(value) ? value : null;
+  return safeSessionId(process.env[SESSION_ID_ENV]);
 }
 
 function shellEscape(value: string): string {

@@ -182,6 +182,9 @@ function finalText(call: ExecCall): string {
   if (scenario === "schema-violation") {
     return JSON.stringify({ ...VALID_REVIEW, extra: true });
   }
+  if (call.outputSchema?.endsWith("stop-gate.schema.json")) {
+    return JSON.stringify({ verdict: "allow", summary: "No blocking problems.", findings: [] });
+  }
   if (call.outputSchema !== null) {
     return JSON.stringify(VALID_REVIEW);
   }
@@ -260,6 +263,10 @@ async function runExec(call: ExecCall): Promise<void> {
     emit({ type: "item.completed", item: { id: "w1", type: "error", message: "under-development feature warning" } });
   }
 
+  // Simulates a background task writing while the review runs.
+  if (process.env.FAKE_CODEX_TOUCH_FILE) {
+    fs.appendFileSync(process.env.FAKE_CODEX_TOUCH_FILE, "written during the review\n");
+  }
   if (scenario === "empty-output") {
     if (call.outputFile) {
       fs.writeFileSync(call.outputFile, "");

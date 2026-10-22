@@ -9,6 +9,9 @@ export const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 export const ADAPTER = path.join(PLUGIN_ROOT, "scripts", "codex.ts");
 const FAKE_CODEX = path.join(ROOT, "tests", "fixtures", "fake-codex.ts");
 
+// Standard system directories; they hold no codex.
+const SYSTEM_PATH = ["/usr/bin", "/bin"];
+
 const tempDirs: string[] = [];
 after(() => {
   for (const dir of tempDirs) {
@@ -32,7 +35,9 @@ function findOnPath(command: string): string {
 }
 
 // Builds an environment without Claude Code's or the real Codex's state, with
-// PATH limited to node, git, and (unless disabled) the fake codex.
+// PATH limited to node, git, (unless disabled) the fake codex, and the system
+// directories that Git's own shell scripts, such as `git submodule` on Linux,
+// need for basename and other coreutils.
 export type FakeEnv = {
   env: NodeJS.ProcessEnv;
   home: string;
@@ -81,7 +86,7 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
   }
   Object.assign(env, {
     HOME: home,
-    PATH: options.codex === false ? tools : `${fakeBin}${path.delimiter}${tools}`,
+    PATH: [...(options.codex === false ? [] : [fakeBin]), tools, ...SYSTEM_PATH].join(path.delimiter),
     CLAUDE_PLUGIN_DATA: dataDir,
     CODEX_HOME: path.join(home, ".codex"),
     FAKE_CODEX_LOG: logPath,

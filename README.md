@@ -16,6 +16,7 @@ The plugin is a thin adapter over your local Codex CLI. `/codex:review`, `/codex
 
 - **The Codex CLI**, installed and logged in. Install it with `npm install -g @openai/codex`, then run `codex login`. Codex usage counts toward your ChatGPT plan or API key limits.
 - **Node.js 24 or later.** The plugin is written in TypeScript and runs through Node's built-in type stripping. It has no runtime dependencies.
+- **Git 2.45 or later** for the stop-time review gate. `/codex:setup` warns when Git is older.
 
 ## Install
 
@@ -127,7 +128,19 @@ Checks whether Codex is installed and logged in, and turns the review gate on or
 /codex:setup --disable-review-gate
 ```
 
-When the review gate is on, a `Stop` hook asks Codex for a read-only review of Claude's previous turn before Claude stops. If Codex answers `BLOCK`, or the review fails or times out, the hook blocks the stop so Claude can address it. If Codex is not installed, the hook skips the review, prints a note, and lets Claude stop.
+When the review gate is on, a `Stop` hook asks Codex for a read-only review of what changed in the working tree before Claude stops:
+
+- The hook snapshots the working tree (tracked, untracked, and deleted files; ignored files do not count) as a Git tree without touching your index, refs, or files. If the snapshot matches the one Codex last allowed, Claude stops without a review.
+- Otherwise Codex reviews the difference from the last allowed snapshot. Before the first allow in a session, the difference is measured from the commit the session started on (for the workspace Claude Code started in), so commits Claude made also get reviewed. Without such a record, for example in another workspace, it is measured from `HEAD`, and the hook tells you that earlier commits were not reviewed.
+- Codex answers with a structured verdict. It blocks only for problems tied to a file and line, and the hook passes those findings back to Claude. After three blocks with findings in a row, if the fourth review also blocks, the hook lets Claude stop and shows those findings to you; run `/codex:review` yourself then.
+- If the review fails, times out, or returns an invalid verdict, the hook blocks the stop without counting it toward that limit. Stop again to retry, or turn the gate off with `/codex:setup --disable-review-gate`.
+- If the working tree changes while Codex is reviewing it, for example because a background task is still writing, the hook blocks the stop and asks Claude to stop again once the writes are done.
+- Outside a Git repository, in a repository with submodules, and in a repository where some files use a Git filter such as Git LFS, there is no snapshot. Codex then reviews the working tree against the baseline described above, plus untracked files, on every stop, and the hook tells you why; outside Git, Codex reviews what Claude's final message describes. Such a review is never recorded as approved.
+- If Codex is not installed, the hook skips the review, shows a note, and lets Claude stop.
+
+The gate does not review the contents of `.git` (such as its config and hooks) or files ignored by `.gitignore`.
+
+The snapshots add unreferenced objects to the repository, which `git gc` removes.
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to watch the session.
