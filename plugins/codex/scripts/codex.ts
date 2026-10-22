@@ -35,6 +35,7 @@ import {
   resolveCommit,
   resolveWorkspaceRoot,
 } from "./lib/git.ts";
+import { interpolate } from "./lib/prompt.ts";
 import { parseReviewOutput, renderReviewResult } from "./lib/review-render.ts";
 import { recordThread, resolveResumeThread } from "./lib/thread-store.ts";
 import { InterruptedError } from "./lib/process-group.ts";
@@ -125,10 +126,6 @@ function finalMessage(result: CodexRunResult, outputFile: string): string {
     throw new CodexFailure("codex finished without a final message.", cleanCodexStderr(result.stderr));
   }
   return message.endsWith("\n") ? message : `${message}\n`;
-}
-
-function interpolate(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(/\{\{([A-Z_]+)\}\}/g, (_, key: string) => values[key] ?? "");
 }
 
 // ---------------------------------------------------------------- task

@@ -2,7 +2,7 @@
 // schemas/review-output.schema.json, then renders it. The validator is written
 // for that one schema rather than as a general JSON Schema implementation.
 
-import { isRecord, type JsonObject } from "./json.ts";
+import { checkEnum, checkKeys, checkPositiveInteger, checkString, isRecord } from "./json.ts";
 
 const VERDICTS = ["approve", "needs-attention"] as const;
 const SEVERITIES = ["critical", "high", "medium", "low"] as const;
@@ -30,39 +30,6 @@ export type ReviewOutput = {
 };
 
 export type ParsedReview = { ok: true; review: ReviewOutput } | { ok: false; error: string };
-
-function checkKeys(object: JsonObject, keys: readonly string[], where: string): string | null {
-  for (const key of keys) {
-    if (!(key in object)) {
-      return `${where}: missing property "${key}"`;
-    }
-  }
-  for (const key of Object.keys(object)) {
-    if (!keys.includes(key)) {
-      return `${where}: unexpected property "${key}"`;
-    }
-  }
-  return null;
-}
-
-function checkString(value: unknown, where: string, minLength: number): string | null {
-  if (typeof value !== "string") {
-    return `${where}: expected a string`;
-  }
-  return value.length < minLength ? `${where}: must not be empty` : null;
-}
-
-function checkEnum(value: unknown, allowed: readonly string[], where: string): string | null {
-  return typeof value === "string" && allowed.includes(value)
-    ? null
-    : `${where}: expected one of ${allowed.join(", ")}, got ${JSON.stringify(value)}`;
-}
-
-function checkPositiveInteger(value: unknown, where: string): string | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1
-    ? null
-    : `${where}: expected an integer >= 1`;
-}
 
 function checkFinding(finding: unknown, where: string): string | null {
   if (!isRecord(finding)) {
