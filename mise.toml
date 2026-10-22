@@ -8,7 +8,7 @@ pnpm = "12"
 actionlint = "1"
 betterleaks = "1"
 ghalint = "1"
-# The Codex CLI that `pnpm run build` uses to generate the app-server types.
+# The Codex CLI that `pnpm run test:cli-contract` checks the plugin against.
 "npm:@openai/codex" = "0"
 
 [settings]
