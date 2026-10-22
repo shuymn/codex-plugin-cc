@@ -8,6 +8,15 @@
   "options": {
     "typeAware": true
   },
+  "overrides": [
+    {
+      // node:test runs the promise that test() returns, so the tests do not await it.
+      "files": ["tests/**/*.ts"],
+      "rules": {
+        "typescript/no-floating-promises": "off"
+      }
+    }
+  ],
   "ignorePatterns": [
     // Legacy .mjs code; the TypeScript rewrite replaces it and removes these exclusions.
     "plugins/codex/scripts/**/*.mjs",
