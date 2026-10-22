@@ -124,7 +124,12 @@ test("taking a snapshot leaves the index, refs, and working tree untouched", () 
   try {
     treeOf(takeSnapshot(repo));
   } finally {
-    process.env.TMPDIR = savedTmpdir;
+    // Assigning undefined would store the string "undefined".
+    if (savedTmpdir === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = savedTmpdir;
+    }
   }
   assert.deepEqual(state(), before);
 });
@@ -133,15 +138,16 @@ test("files with a Git filter make the snapshot fail without running the filter"
   for (const tracked of [true, false]) {
     const repo = makeRepo(fake.env);
     const marker = path.join(makeTempDir(), "filter-ran");
-    git(repo, ["config", "filter.probe.clean", `touch "${marker}"; cat`], fake.env);
     write(repo, ".gitattributes", "*.dat filter=probe\n");
     if (tracked) {
       write(repo, "a.dat", "data\n");
-      git(repo, ["-c", "filter.probe.clean=cat", "add", "."], fake.env);
+      git(repo, ["add", "."], fake.env);
       git(repo, ["commit", "-q", "-m", "filtered"], fake.env);
     } else {
       write(repo, "new.dat", "data\n");
     }
+    // Configured only now, so setting up the repository cannot leave the marker.
+    git(repo, ["config", "filter.probe.clean", `touch "${marker}"; cat`], fake.env);
     const snapshot = takeSnapshot(repo);
     assert.equal(snapshot.kind, "failed", `tracked=${tracked}`);
     assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /filter/);
