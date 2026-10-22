@@ -11,9 +11,11 @@
   "overrides": [
     {
       // node:test runs the promise that test() returns, so the tests do not await it.
+      // Tests cast fixture JSON they wrote themselves.
       "files": ["tests/**/*.ts"],
       "rules": {
-        "typescript/no-floating-promises": "off"
+        "typescript/no-floating-promises": "off",
+        "typescript/no-unsafe-type-assertion": "off"
       }
     }
   ],

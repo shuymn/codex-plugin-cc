@@ -1,5 +1,3 @@
-import fs from "node:fs";
-
 // Parses only the leading options of the raw slash-command arguments and keeps
 // everything from the first non-option token on as verbatim text, so free text
 // such as a task prompt keeps its newlines and quotes and cannot smuggle in
@@ -148,10 +146,15 @@ export function stripTrailingNewline(value: string): string {
 }
 
 // The command templates pass the user's arguments only through a quoted heredoc
-// on stdin, so the shell never expands them.
-export function readArgumentInput(): string {
+// on stdin, so the shell never expands them. The stream is read asynchronously
+// because a synchronous read of a non-blocking pipe can fail with EAGAIN.
+export async function readArgumentInput(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
   }
-  return stripTrailingNewline(fs.readFileSync(0, "utf8"));
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return stripTrailingNewline(Buffer.concat(chunks).toString("utf8"));
 }

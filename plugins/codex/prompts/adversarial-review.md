@@ -4,7 +4,7 @@ Your job is to break confidence in the change, not to validate it.
 </role>
 
 <task>
-Review the provided repository context as if you are trying to find the strongest reasons this change should not ship yet.
+Review the target change as if you are trying to find the strongest reasons this change should not ship yet.
 Target: {{TARGET_LABEL}}
 User focus: {{USER_FOCUS}}
 </task>
@@ -32,7 +32,6 @@ Actively try to disprove the change.
 Look for violated invariants, missing guards, unhandled failure paths, and assumptions that stop being true under stress.
 Trace how bad inputs, retries, concurrent actions, or partially completed operations move through the code.
 If the user supplied a focus area, weight it heavily, but still report any other material issue you can defend.
-{{REVIEW_COLLECTION_GUIDANCE}}
 </review_method>
 
 <finding_bar>
@@ -79,6 +78,7 @@ Before finalizing, check that each finding is:
 - actionable for an engineer fixing the issue
 </final_check>
 
-<repository_context>
-{{REVIEW_INPUT}}
-</repository_context>
+<review_target>
+{{TARGET_INSTRUCTIONS}}
+This is a read-only review: inspect the repository with read-only commands and do not modify any files.
+</review_target>
