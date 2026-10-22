@@ -3,15 +3,41 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { firstLine, makeFakeEnv, makeTempDir, runAdapter } from "./helpers.ts";
+import { importClaudeSession, TransferError } from "../plugins/codex/scripts/lib/transfer.ts";
+import {
+  exitCodeOf,
+  firstLine,
+  makeFakeEnv,
+  makeTempDir,
+  runAdapter,
+  spawnAdapter,
+  waitForFile,
+  waitUntilGone,
+} from "./helpers.ts";
+
+// The smallest Claude transcript the real importer accepts: a record with the
+// session's cwd and a conversation (codex-rs external-agent-migration).
+function transcriptLines(cwd: string): string {
+  return [
+    { type: "user", cwd, timestamp: "2026-06-03T12:00:00Z", message: { role: "user", content: "Fix the build." } },
+    {
+      type: "assistant",
+      cwd,
+      timestamp: "2026-06-03T12:00:05Z",
+      message: { role: "assistant", content: [{ type: "text", text: "Fixed it." }] },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+}
 
 function setup(scenario = "ok") {
   const fake = makeFakeEnv({ scenario });
   const projectDir = path.join(fake.home, ".claude", "projects", "-repo");
   fs.mkdirSync(projectDir, { recursive: true });
   const transcript = path.join(projectDir, "session-1.jsonl");
-  fs.writeFileSync(transcript, '{"type":"user"}\n');
   const cwd = makeTempDir();
+  fs.writeFileSync(transcript, `${transcriptLines(cwd)}\n`);
   return { fake, transcript, cwd };
 }
 
@@ -34,8 +60,84 @@ test("transfer imports the current transcript and prints the resume command", ()
   );
   // The server-initiated request is refused with method-not-found.
   assert.ok(rpcs.some((rpc) => rpc.id === "server-1" && rpc.error?.code === -32601));
-  // stdin was closed and the app-server exited before the adapter did.
-  assert.ok(calls.some((call) => call.appServerClosed));
+  // It waited past the completion for another import until its own arrived,
+  // then closed stdin and the app-server exited before the adapter did.
+  const events = calls.flatMap((call) =>
+    call.completed ? [`completed:${call.completed}`] : call.appServerClosed ? ["closed"] : [],
+  );
+  assert.deepEqual(events, ["completed:other", "completed:import-1", "closed"]);
+});
+
+test("transfer fails when the transcript has nothing the importer accepts", () => {
+  const { fake, transcript, cwd } = setup();
+  fs.writeFileSync(transcript, '{"type":"user","message":{"content":"no cwd"}}\n');
+  const result = runAdapter("transfer", `--source ${transcript}`, { env: fake.env, cwd });
+  assert.equal(result.status, 1);
+  assert.match(firstLine(result.stderr), /did not record an imported thread/);
+});
+
+test("SIGTERM during transfer stops the app-server and exits 143", { timeout: 60_000 }, async () => {
+  const { fake, transcript, cwd } = setup("transfer-hang");
+  const ready = path.join(makeTempDir(), "ready");
+  const child = spawnAdapter("transfer", `--source ${transcript}`, {
+    env: { ...fake.env, FAKE_CODEX_READY_FILE: ready },
+    cwd,
+  });
+  const exited = exitCodeOf(child);
+  const serverPid = Number(await waitForFile(ready));
+  child.kill("SIGTERM");
+  assert.equal(await exited, 143);
+  assert.ok(await waitUntilGone(serverPid), "the app-server is still running");
+});
+
+// In-process runs of the client, with short deadlines.
+async function importInProcess(scenario: string, timing: { timeoutMs: number; graceMs: number }) {
+  const { fake, transcript, cwd } = setup(scenario);
+  const ready = path.join(makeTempDir(), "ready");
+  const saved = { ...process.env };
+  Object.assign(process.env, {
+    PATH: fake.env.PATH,
+    CODEX_HOME: fake.env.CODEX_HOME,
+    FAKE_CODEX_LOG: fake.env.FAKE_CODEX_LOG,
+    FAKE_CODEX_SCENARIO: scenario,
+    FAKE_CODEX_READY_FILE: ready,
+  });
+  const started = Date.now();
+  try {
+    const error = await importClaudeSession(cwd, transcript, {
+      timeoutMs: timing.timeoutMs,
+      closeGraceMs: timing.graceMs,
+      interruptGraceMs: timing.graceMs,
+      terminateGraceMs: timing.graceMs,
+    }).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    return { error, elapsed: Date.now() - started, serverPid: Number(await waitForFile(ready)), fake };
+  } finally {
+    process.env = saved;
+  }
+}
+
+test("transfer gives up on an app-server that never answers and reaps it", async () => {
+  const { error, elapsed, serverPid, fake } = await importInProcess("transfer-hang", { timeoutMs: 500, graceMs: 200 });
+  assert.ok(error instanceof TransferError, String(error));
+  assert.match(error.message, /timed out/);
+  assert.ok(elapsed < 5_000, `took ${elapsed} ms`);
+  assert.ok(await waitUntilGone(serverPid));
+  // Closing stdin was enough for a server that honors it.
+  assert.ok(fake.readLog().some((call) => call.appServerClosed));
+});
+
+test("transfer kills an app-server that ignores stdin, SIGINT, and SIGTERM", async () => {
+  const { error, serverPid, fake } = await importInProcess("transfer-stubborn", { timeoutMs: 300, graceMs: 200 });
+  assert.ok(error instanceof TransferError, String(error));
+  assert.ok(await waitUntilGone(serverPid), "the app-server survived SIGKILL");
+  const ignored = fake
+    .readLog()
+    .filter((call) => call.ignored)
+    .map((call) => call.signal);
+  assert.deepEqual(ignored, ["SIGINT", "SIGTERM"]);
 });
 
 test("transfer accepts --source with ~ expansion", () => {

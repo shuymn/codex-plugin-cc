@@ -3,6 +3,7 @@
 // every call as one JSON line in FAKE_CODEX_LOG, and plays a scenario chosen
 // by FAKE_CODEX_SCENARIO.
 
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,7 +25,10 @@ type ExecCall = {
 
 function log(entry: Record<string, unknown>): void {
   if (logPath) {
-    fs.appendFileSync(logPath, `${JSON.stringify({ argv, cwd: process.cwd(), scenario, ...entry })}\n`);
+    fs.appendFileSync(
+      logPath,
+      `${JSON.stringify({ argv, cwd: process.cwd(), scenario, pid: process.pid, ...entry })}\n`,
+    );
   }
 }
 
@@ -207,15 +211,21 @@ async function runExec(call: ExecCall): Promise<void> {
   emit({ type: "thread.started", thread_id: threadId });
   emit({ type: "turn.started" });
 
-  if (scenario === "slow") {
+  if (scenario === "slow" || scenario === "ignore-sigint") {
+    // `slow` ends on the first signal; `ignore-sigint` behaves like a Codex
+    // binary that keeps running after SIGINT and only stops on SIGTERM.
     const onSignal = (signal: NodeJS.Signals): void => {
+      if (scenario === "ignore-sigint" && signal === "SIGINT") {
+        log({ signal, ignored: true });
+        return;
+      }
       log({ signal });
       process.exit(signal === "SIGINT" ? 130 : 143);
     };
     process.on("SIGINT", onSignal);
     process.on("SIGTERM", onSignal);
     if (process.env.FAKE_CODEX_READY_FILE) {
-      fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, "ready");
+      fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
     }
     setInterval(() => {}, 1000);
     return;
@@ -252,17 +262,73 @@ function send(message: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+type RpcMessage = {
+  id?: number | string;
+  method?: string;
+  params?: { migrationItems: { details: { sessions: { path: string }[] } }[] };
+  error?: unknown;
+};
+
+// Mirrors the real importer: a Claude transcript is importable only when a
+// record carries a cwd and there is at least one user message.
+function isImportable(sourcePath: string): boolean {
+  let hasCwd = false;
+  let hasUserMessage = false;
+  for (const line of fs.readFileSync(sourcePath, "utf8").split("\n")) {
+    try {
+      const record = JSON.parse(line) as { type?: string; cwd?: unknown; message?: unknown };
+      hasCwd ||= typeof record.cwd === "string";
+      hasUserMessage ||= record.type === "user" && record.message !== undefined;
+    } catch {
+      // The real importer skips lines that are not JSON.
+    }
+  }
+  return hasCwd && hasUserMessage;
+}
+
+function writeLedger(sourcePath: string): void {
+  if (scenario === "transfer-no-ledger" || !isImportable(sourcePath)) {
+    return;
+  }
+  const codexHome = process.env.CODEX_HOME ?? "";
+  const sha = createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex");
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, "external_agent_session_imports.json"),
+    JSON.stringify({
+      records: [{ source_path: sourcePath, content_sha256: sha, imported_thread_id: randomUUID(), imported_at: 1 }],
+    }),
+  );
+}
+
 function runAppServer(): void {
   log({ stdin: null });
+  if (process.env.FAKE_CODEX_READY_FILE) {
+    fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
+  }
+  const stubborn = scenario === "transfer-stubborn";
+  // Stays alive after stdin closes and on SIGINT and SIGTERM, so only SIGKILL ends it.
+  if (stubborn) {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.on(signal, () => log({ signal, ignored: true }));
+    }
+    setInterval(() => {}, 1000);
+  } else {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.on(signal, () => {
+        log({ signal });
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      });
+    }
+  }
   const lines = readline.createInterface({ input: process.stdin });
   lines.on("line", (line) => {
-    const message = JSON.parse(line) as {
-      id?: number | string;
-      method?: string;
-      params?: { migrationItems: { details: { sessions: { path: string }[] } }[] };
-      error?: unknown;
-    };
+    const message = JSON.parse(line) as RpcMessage;
     log({ rpc: message });
+    // Alive but silent: never answers anything.
+    if (scenario === "transfer-hang" || stubborn) {
+      return;
+    }
     if (message.method === "initialize") {
       send({ id: message.id, result: { userAgent: "fake" } });
       return;
@@ -275,28 +341,51 @@ function runAppServer(): void {
       return;
     }
     const sourcePath = message.params?.migrationItems[0]?.details.sessions[0]?.path ?? "";
-    const codexHome = process.env.CODEX_HOME ?? "";
-    const threadId = randomUUID();
-    if (scenario !== "transfer-no-ledger") {
-      const sha = createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex");
-      fs.mkdirSync(codexHome, { recursive: true });
-      fs.writeFileSync(
-        path.join(codexHome, "external_agent_session_imports.json"),
-        JSON.stringify({
-          records: [{ source_path: sourcePath, content_sha256: sha, imported_thread_id: threadId, imported_at: 1 }],
-        }),
-      );
-    }
     // A server request the client must refuse, a completion for some other
-    // import, then the response and its completion back to back.
+    // import, and the response. The matching completion, and the ledger that
+    // goes with it, come only later, so a client that stops waiting at the
+    // first completion finds no ledger.
     send({ id: "server-1", method: "item/tool/requestUserInput", params: {} });
     send({ method: "externalAgentConfig/import/completed", params: { importId: "other", itemTypeResults: [] } });
+    log({ completed: "other" });
     send({ id: message.id, result: { importId: "import-1" } });
-    send({ method: "externalAgentConfig/import/completed", params: { importId: "import-1", itemTypeResults: [] } });
+    setTimeout(() => {
+      writeLedger(sourcePath);
+      log({ completed: "import-1" });
+      send({ method: "externalAgentConfig/import/completed", params: { importId: "import-1", itemTypeResults: [] } });
+    }, 300);
   });
   lines.on("close", () => {
     log({ appServerClosed: true });
-    process.exit(0);
+    if (!stubborn) {
+      process.exit(0);
+    }
+  });
+}
+
+// Like the npm launcher of the real CLI: runs the actual binary as a child,
+// forwards signals only while the child has not been signaled yet, and
+// mirrors the child's exit.
+function runLauncher(): void {
+  const child = spawn(process.execPath, [process.argv[1] ?? "", ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, FAKE_CODEX_SCENARIO: "ignore-sigint" },
+  });
+  log({ launcher: true, childPid: child.pid });
+  const forward = (signal: NodeJS.Signals): void => {
+    if (!child.killed) {
+      child.kill(signal);
+    }
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => forward(signal));
+  }
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else {
+      process.exit(code ?? 1);
+    }
   });
 }
 
@@ -320,7 +409,12 @@ async function main(): Promise<void> {
     return;
   }
   if (argv[0] === "exec") {
-    await runExec(parseExec(argv.slice(1)));
+    const call = parseExec(argv.slice(1));
+    if (scenario === "launcher") {
+      runLauncher();
+      return;
+    }
+    await runExec(call);
     return;
   }
   reject("unknown command");

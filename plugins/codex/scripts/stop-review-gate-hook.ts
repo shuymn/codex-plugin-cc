@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { readStdin } from "./lib/args.ts";
-import { APPROVAL_OVERRIDES, CodexNotFoundError, runCodex, signalExitCode } from "./lib/codex-exec.ts";
+import { APPROVAL_OVERRIDES, CodexNotFoundError, failureReason, runCodex, signalExitCode } from "./lib/codex-exec.ts";
 import { PLUGIN_ROOT } from "./lib/env.ts";
 import { isReviewGateEnabled } from "./lib/gate-config.ts";
 import { resolveWorkspaceRoot } from "./lib/git.ts";
@@ -86,7 +86,8 @@ async function main(): Promise<number> {
     if (result.timedOut) {
       verdict = block(`The stop-time Codex review timed out after 13 minutes. ${MANUAL_HINT}`);
     } else if (result.exitCode !== 0) {
-      const detail = result.errorMessage ? `: ${result.errorMessage}` : "";
+      const reason = failureReason(result);
+      const detail = reason ? `: ${reason}` : "";
       verdict = block(`The stop-time Codex review failed (exit ${String(result.exitCode)})${detail}. ${MANUAL_HINT}`);
     } else {
       let output = "";

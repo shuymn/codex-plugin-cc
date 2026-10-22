@@ -10,10 +10,13 @@ import {
   git,
   makeFakeEnv,
   makeRepo,
+  exitCodeOf,
   makeTempDir,
   PLUGIN_ROOT,
   runAdapter,
   spawnAdapter,
+  waitForFile,
+  waitUntilGone,
 } from "./helpers.ts";
 
 const APPROVALS = ["-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"'];
@@ -463,6 +466,69 @@ test("SIGTERM is forwarded to codex as SIGINT and the adapter exits 143 after co
   assert.deepEqual(fs.readdirSync(adapterTmp), []);
 });
 
+test("the stop ladder reaches a Codex binary behind a launcher that ignores SIGINT", { timeout: 60_000 }, async () => {
+  const { fake, repo } = setup("launcher");
+  const ready = path.join(makeTempDir(), "ready");
+  const adapterTmp = makeTempDir();
+  const env = { ...fake.env, FAKE_CODEX_READY_FILE: ready, TMPDIR: adapterTmp };
+  const child = spawnAdapter("task", "go", { env, cwd: repo });
+  const exited = exitCodeOf(child);
+  const binaryPid = Number(await waitForFile(ready));
+  const started = Date.now();
+  child.kill("SIGTERM");
+  assert.equal(await exited, 143);
+
+  const calls = fake.readLog();
+  const launcher = calls.find((call) => call.launcher);
+  assert.ok(launcher);
+  // The binary ignored SIGINT (sent to the group, and forwarded once more by
+  // the launcher) and was stopped by the ladder's SIGTERM after the 10 second
+  // grace, which the launcher would no longer have forwarded.
+  const binarySignals = calls
+    .filter((call) => call.pid === binaryPid && call.signal)
+    .map((call) => [call.signal, call.ignored ?? false]);
+  assert.deepEqual(binarySignals.at(-1), ["SIGTERM", false]);
+  assert.ok(binarySignals.length >= 2);
+  for (const signal of binarySignals.slice(0, -1)) {
+    assert.deepEqual(signal, ["SIGINT", true]);
+  }
+  assert.ok(Date.now() - started >= 9_000);
+  assert.ok(await waitUntilGone(binaryPid), "the Codex binary is still running");
+  assert.ok(await waitUntilGone(launcher.pid), "the launcher is still running");
+  assert.deepEqual(fs.readdirSync(adapterTmp), []);
+});
+
+test("a failure to record the thread stops codex, cleans up, and exits 1", { timeout: 60_000 }, async () => {
+  const { fake, repo } = setup("slow");
+  const threads = path.join(fake.dataDir, "threads");
+  fs.mkdirSync(threads, { recursive: true });
+  fs.chmodSync(threads, 0o500);
+  try {
+    const ready = path.join(makeTempDir(), "ready");
+    const adapterTmp = makeTempDir();
+    const env = { ...fake.env, FAKE_CODEX_READY_FILE: ready, TMPDIR: adapterTmp };
+    const child = spawnAdapter("task", "go", { env, cwd: repo });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    assert.equal(await exitCodeOf(child), 1);
+    assert.match(firstLine(stderr), /^codex-plugin: could not record the Codex thread/);
+    const codexPid = Number(await waitForFile(ready));
+    assert.ok(await waitUntilGone(codexPid), "codex is still running");
+    assert.deepEqual(
+      fake
+        .readLog()
+        .filter((call) => call.signal)
+        .map((call) => call.signal),
+      ["SIGINT"],
+    );
+    assert.deepEqual(fs.readdirSync(adapterTmp), []);
+  } finally {
+    fs.chmodSync(threads, 0o700);
+  }
+});
+
 // EARS 17
 test("a missing codex exits 3 and points to /codex:setup", () => {
   const fake = makeFakeEnv({ codex: false });
@@ -508,4 +574,10 @@ test("setup tells the user to log in or install codex", () => {
   assert.equal(noCodex.status, 0);
   assert.match(noCodex.stdout, /codex: not found/);
   assert.match(noCodex.stdout, /npm install -g @openai\/codex/);
+});
+
+test("transfer --help says --cwd does not set the imported thread's directory", () => {
+  const { fake, repo } = setup();
+  const result = runAdapter("transfer", "--help", { env: fake.env, cwd: repo });
+  assert.match(result.stdout, /working directory comes from the transcript/);
 });

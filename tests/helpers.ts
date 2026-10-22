@@ -45,6 +45,11 @@ export type FakeCall = {
   argv: string[];
   cwd: string;
   scenario: string;
+  pid: number;
+  ignored?: boolean;
+  completed?: string;
+  launcher?: boolean;
+  childPid?: number;
   stdin?: string | null;
   rejected?: string;
   signal?: string;
@@ -151,4 +156,47 @@ export function makeRepo(env: NodeJS.ProcessEnv): string {
 
 export function firstLine(text: string): string {
   return text.split("\n")[0] ?? "";
+}
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Waits for a file the fake codex writes once it is running, and returns its content.
+export async function waitForFile(file: string, timeoutMs = 20_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(file) || fs.readFileSync(file, "utf8") === "") {
+    if (Date.now() > deadline) {
+      throw new Error(`${file} never appeared`);
+    }
+    await sleep(20);
+  }
+  return fs.readFileSync(file, "utf8");
+}
+
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Orphaned processes are reaped by init shortly after they exit.
+export async function waitUntilGone(pid: number, timeoutMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (isAlive(pid)) {
+    if (Date.now() > deadline) {
+      return false;
+    }
+    await sleep(20);
+  }
+  return true;
+}
+
+export function exitCodeOf(child: { on: (event: "close", listener: (code: number | null) => void) => unknown }) {
+  return new Promise<number | null>((resolve) => {
+    child.on("close", (code) => resolve(code));
+  });
 }

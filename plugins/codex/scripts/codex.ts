@@ -18,6 +18,7 @@ import {
   type CodexRunResult,
   CodexNotFoundError,
   cleanCodexStderr,
+  failureReason,
   type ModelOptions,
   modelArgs,
   runCodex,
@@ -35,6 +36,7 @@ import {
 } from "./lib/git.ts";
 import { parseReviewOutput, renderReviewResult } from "./lib/review-render.ts";
 import { recordThread, resolveResumeThread } from "./lib/thread-store.ts";
+import { InterruptedError } from "./lib/process-group.ts";
 import { importClaudeSession, resolveClaudeSessionPath, TransferError } from "./lib/transfer.ts";
 
 const EXIT_CODEX_FAILED = 1;
@@ -112,7 +114,7 @@ function readOutputFile(filePath: string): string {
 function finalMessage(result: CodexRunResult, outputFile: string): string {
   if (result.exitCode !== 0) {
     const stderr = cleanCodexStderr(result.stderr);
-    const reason = result.errorMessage ?? stderr.split("\n").at(-1) ?? "";
+    const reason = failureReason(result);
     const status = result.exitCode === null ? `signal ${result.exitSignal ?? "unknown"}` : String(result.exitCode);
     throw new CodexFailure(`codex exited with ${status}${reason ? `: ${reason}` : ""}`, stderr);
   }
@@ -202,6 +204,12 @@ async function runTask(options: Options, text: string): Promise<number> {
     });
     if (result.receivedSignal) {
       return signalExitCode(result.receivedSignal);
+    }
+    if (result.callbackError) {
+      throw new CodexFailure(
+        `could not record the Codex thread, so Codex was stopped: ${result.callbackError.message}`,
+        cleanCodexStderr(result.stderr),
+      );
     }
     const message = finalMessage(result, outputFile);
     const threadId = result.threadId ?? "unknown";
@@ -429,7 +437,8 @@ Imports the current Claude Code session into a resumable Codex thread.
 
 Options:
   --source <jsonl>  Import this Claude transcript instead of the current one.
-  --cwd, -C <dir>   Use <dir> as the working directory of the imported thread.
+  --cwd, -C <dir>   Start the Codex app server in <dir>. The imported thread's
+                    working directory comes from the transcript, not from here.
   --help, -h        Show this help.
 `;
 
@@ -530,6 +539,8 @@ try {
     process.exitCode = fail(EXIT_CODEX_NOT_FOUND, `${error.message} Run /codex:setup.`);
   } else if (error instanceof CodexFailure) {
     process.exitCode = fail(EXIT_CODEX_FAILED, error.message, error.detail);
+  } else if (error instanceof InterruptedError) {
+    process.exitCode = signalExitCode(error.signal);
   } else if (error instanceof TransferError) {
     process.exitCode = fail(EXIT_CODEX_FAILED, error.message);
   } else {

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,12 +5,16 @@ import path from "node:path";
 import readline from "node:readline";
 
 import { UsageError } from "./args.ts";
-import { CodexNotFoundError, cleanCodexStderr } from "./codex-exec.ts";
+import { cleanCodexStderr } from "./codex-exec.ts";
 import { TRANSCRIPT_PATH_ENV } from "./env.ts";
 import { isRecord } from "./json.ts";
+import { type GroupExit, InterruptedError, spawnCodexGroup, type StopTiming } from "./process-group.ts";
 
 const IMPORT_COMPLETED = "externalAgentConfig/import/completed";
+// One deadline for the whole exchange: initialize, import, and completion.
 const IMPORT_TIMEOUT_MS = 120_000;
+// How long a server gets to exit on its own after stdin closes.
+const CLOSE_GRACE_MS = 5_000;
 const METHOD_NOT_FOUND = -32601;
 
 // Hand-written subset of the app-server protocol this client uses.
@@ -131,6 +134,8 @@ function importedThreadIdForSource(sourcePath: string): string | null {
   return threadId;
 }
 
+// For a Claude transcript the importer takes the session's cwd from the
+// transcript itself; this cwd is only the fallback for other formats.
 function sessionMigration(sourcePath: string, cwd: string) {
   return {
     migrationItems: [
@@ -151,17 +156,30 @@ function sessionMigration(sourcePath: string, cwd: string) {
   };
 }
 
+export type ImportOptions = StopTiming & { timeoutMs?: number; closeGraceMs?: number };
+
 // Speaks newline-delimited JSON-RPC to `codex app-server` over stdio:
 // initialize, initialized, externalAgentConfig/import, then waits for the
-// import/completed notification with the same importId.
-export async function importClaudeSession(cwd: string, sourcePath: string): Promise<string> {
-  const child = spawn("codex", ["app-server"], { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+// import/completed notification with the same importId. The server runs in
+// its own process group; on every path its stdin is closed, it gets a grace
+// period to exit, and then the stop ladder ends the group before this returns.
+export async function importClaudeSession(
+  cwd: string,
+  sourcePath: string,
+  options: ImportOptions = {},
+): Promise<string> {
+  const group = spawnCodexGroup(["app-server"], {
+    cwd,
+    onStop: () => group.child.stdin.end(),
+    ...(options.interruptGraceMs === undefined ? {} : { interruptGraceMs: options.interruptGraceMs }),
+    ...(options.terminateGraceMs === undefined ? {} : { terminateGraceMs: options.terminateGraceMs }),
+  });
+  const { child } = group;
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
     stderr = (stderr + chunk).slice(-1_000_000);
   });
-  child.stdin.on("error", () => {});
 
   // Set once the server can no longer answer; every waiter fails with it.
   let closedError: Error | null = null;
@@ -169,34 +187,34 @@ export async function importClaudeSession(cwd: string, sourcePath: string): Prom
   // Completions are recorded from the first line on, so one that arrives
   // right after the import response is never missed.
   const completedImportIds = new Set<string>();
-  let onCompletion: (() => void) | null = null;
-
+  let onChange: (() => void) | null = null;
   const close = (error: Error): void => {
     closedError ??= error;
     for (const entry of pending.values()) {
       entry.reject(closedError);
     }
     pending.clear();
-    onCompletion?.();
+    onChange?.();
   };
-  const exited = new Promise<void>((resolve) => {
-    child.on("error", (error) => {
-      const notFound = "code" in error && error.code === "ENOENT";
-      close(notFound ? new CodexNotFoundError("codex was not found on PATH.") : error);
-      resolve();
-    });
-    child.on("close", () => {
+  // Settles once the group is gone; also fails waiters if the server dies early.
+  const exited: Promise<GroupExit | Error> = group.exited.then(
+    (exit) => {
       close(
         new TransferError(
           `codex app-server exited before the import finished.${stderr ? `\n${cleanCodexStderr(stderr)}` : ""}`,
         ),
       );
-      resolve();
-    });
-  });
+      return exit;
+    },
+    (error: unknown) => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      close(failure);
+      return failure;
+    },
+  );
 
   const send = (message: JsonRpcMessage): void => {
-    if (closedError === null) {
+    if (closedError === null && child.stdin.writable) {
       child.stdin.write(`${JSON.stringify(message)}\n`);
     }
   };
@@ -222,7 +240,7 @@ export async function importClaudeSession(cwd: string, sourcePath: string): Prom
       const importId = importIdOf(message.params);
       if (importId !== null) {
         completedImportIds.add(importId);
-        onCompletion?.();
+        onChange?.();
       }
       return;
     }
@@ -256,17 +274,29 @@ export async function importClaudeSession(cwd: string, sourcePath: string): Prom
       send({ id, method, params });
     });
 
-  let timeout: NodeJS.Timeout | undefined;
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(
+      () => reject(new TransferError("timed out waiting for Codex to import the Claude session.")),
+      options.timeoutMs ?? IMPORT_TIMEOUT_MS,
+    );
+  });
+  void deadline.catch(() => {});
+  const withinDeadline = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, deadline]);
+
+  let failure: unknown = null;
   try {
-    await request("initialize", {
-      clientInfo: { name: "codex-plugin-cc", title: "Codex plugin for Claude Code", version: "2" },
-      capabilities: { experimentalApi: false },
-    });
+    await withinDeadline(
+      request("initialize", {
+        clientInfo: { name: "codex-plugin-cc", title: "Codex plugin for Claude Code", version: "2" },
+        capabilities: { experimentalApi: false },
+      }),
+    );
     send({ method: "initialized" });
 
     let response: unknown;
     try {
-      response = await request("externalAgentConfig/import", sessionMigration(sourcePath, cwd));
+      response = await withinDeadline(request("externalAgentConfig/import", sessionMigration(sourcePath, cwd)));
     } catch (error) {
       if (error instanceof TransferError && error.rpcCode === METHOD_NOT_FOUND) {
         throw new TransferError(
@@ -280,29 +310,39 @@ export async function importClaudeSession(cwd: string, sourcePath: string): Prom
     if (importId === null) {
       throw new TransferError("codex app-server returned no importId for the import request.");
     }
-    await new Promise<void>((resolve, reject) => {
-      onCompletion = () => {
-        if (completedImportIds.has(importId)) {
-          resolve();
-        } else if (closedError) {
-          reject(closedError);
-        }
-      };
-      timeout = setTimeout(
-        () => reject(new TransferError("timed out waiting for Codex to finish importing the Claude session.")),
-        IMPORT_TIMEOUT_MS,
-      );
-      onCompletion();
-    });
-  } finally {
-    clearTimeout(timeout);
-    onCompletion = null;
-    // Closing stdin ends the app-server; reap it on every path.
-    child.stdin.end();
-    const killTimer = setTimeout(() => child.kill("SIGTERM"), 5_000);
-    await exited;
-    clearTimeout(killTimer);
-    lines.close();
+    await withinDeadline(
+      new Promise<void>((resolve, reject) => {
+        onChange = () => {
+          if (completedImportIds.has(importId)) {
+            resolve();
+          } else if (closedError) {
+            reject(closedError);
+          }
+        };
+        onChange();
+      }),
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  // Reap the server: close stdin, give it a moment, then stop the group.
+  clearTimeout(deadlineTimer);
+  onChange = null;
+  child.stdin.end();
+  const closeTimer = setTimeout(() => group.stop(), options.closeGraceMs ?? CLOSE_GRACE_MS);
+  const exit = await exited;
+  clearTimeout(closeTimer);
+  lines.close();
+
+  if (!(exit instanceof Error) && exit.receivedSignal) {
+    throw new InterruptedError(exit.receivedSignal);
+  }
+  if (exit instanceof Error && failure === null) {
+    throw exit;
+  }
+  if (failure !== null) {
+    throw failure;
   }
 
   const threadId = importedThreadIdForSource(sourcePath);

@@ -84,10 +84,12 @@ test("the real CLI accepts the Stop hook's argv", { skip: !enabled }, () => {
     timeout: 60_000,
   });
   assert.equal(result.status, 0, result.stderr);
-  // A usage error would exit 2; failing at config loading exits 1.
+  // A usage error would exit 2; failing at config loading exits 1, and the
+  // reason carries the config error line from Codex's stderr.
   const decision = JSON.parse(result.stdout) as { decision: string; reason: string };
   assert.equal(decision.decision, "block");
-  assert.match(decision.reason, /failed \(exit 1\)/);
+  assert.match(decision.reason, /failed \(exit 1\): Error loading config\.toml/);
+  assert.doesNotMatch(decision.reason, USAGE_ERROR);
 });
 
 test("setup reads the real CLI's version", { skip: !enabled }, () => {
