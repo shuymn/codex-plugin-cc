@@ -24,7 +24,7 @@ export function currentSessionId(): string | null {
   return value && SESSION_ID_PATTERN.test(value) ? value : null;
 }
 
-export function shellEscape(value: string): string {
+function shellEscape(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 

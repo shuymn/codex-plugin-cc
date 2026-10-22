@@ -9,11 +9,11 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 // then SIGKILL. The result settles only once the group is gone and the output
 // streams are closed, so callers can delete their temporary files safely.
 
-export const INTERRUPT_GRACE_MS = 10_000;
-export const TERMINATE_GRACE_MS = 5_000;
+const INTERRUPT_GRACE_MS = 10_000;
+const TERMINATE_GRACE_MS = 5_000;
 // How long after SIGKILL the group still gets to disappear before the
 // adapter stops waiting and reports that it could not reap it.
-export const REAP_GRACE_MS = 2_000;
+const REAP_GRACE_MS = 2_000;
 // Bounds the wait for stdout and stderr to close after the group is gone, in
 // case a process that left the group still holds them open.
 const STREAM_CLOSE_GRACE_MS = 2_000;

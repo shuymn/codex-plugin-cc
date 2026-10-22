@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 type GitResult = { status: number | null; stdout: string };
 
@@ -11,6 +13,16 @@ function git(cwd: string, args: readonly string[]): GitResult {
 export function gitToplevel(cwd: string): string | null {
   const result = git(cwd, ["rev-parse", "--show-toplevel"]);
   return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+// The form a workspace root is stored and compared in: its real path, or the
+// resolved path when it does not exist.
+export function canonicalWorkspaceRoot(workspaceRoot: string): string {
+  try {
+    return fs.realpathSync(workspaceRoot);
+  } catch {
+    return path.resolve(workspaceRoot);
+  }
 }
 
 export function resolveWorkspaceRoot(cwd: string): string {

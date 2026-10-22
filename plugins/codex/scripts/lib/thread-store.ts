@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { UsageError } from "./args.ts";
 import { pluginDataDir, writeFileAtomic } from "./env.ts";
+import { canonicalWorkspaceRoot } from "./git.ts";
 import { isRecord } from "./json.ts";
 
 // Maps a Claude session to the Codex threads it started:
@@ -20,15 +21,7 @@ function sessionDir(sessionId: string): string {
   return path.join(pluginDataDir(), "threads", sessionId);
 }
 
-function canonicalRoot(workspaceRoot: string): string {
-  try {
-    return fs.realpathSync(workspaceRoot);
-  } catch {
-    return path.resolve(workspaceRoot);
-  }
-}
-
-export function isValidThreadId(threadId: string): boolean {
+function isValidThreadId(threadId: string): boolean {
   return THREAD_ID_PATTERN.test(threadId);
 }
 
@@ -37,17 +30,19 @@ export function recordThread(sessionId: string, threadId: string, workspaceRoot:
     return false;
   }
   const dir = sessionDir(sessionId);
-  const record: ThreadRecord = { cwd: canonicalRoot(workspaceRoot), updatedAt: new Date().toISOString() };
+  const record: ThreadRecord = { cwd: canonicalWorkspaceRoot(workspaceRoot), updatedAt: new Date().toISOString() };
   writeFileAtomic(path.join(dir, `${threadId}.json`), `${JSON.stringify(record)}\n`);
   writeFileAtomic(path.join(dir, LATEST_FILE), `${threadId}\n`);
   return true;
 }
 
-function readRecord(sessionId: string, threadId: string): ThreadRecord | null {
+// Returns the workspace root recorded for the thread; updatedAt is written
+// for inspection but not read back.
+function readRecordedCwd(sessionId: string, threadId: string): string | null {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(path.join(sessionDir(sessionId), `${threadId}.json`), "utf8"));
     if (isRecord(parsed) && typeof parsed.cwd === "string") {
-      return { cwd: parsed.cwd, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "" };
+      return parsed.cwd;
     }
   } catch {
     // A missing or unreadable record means there is nothing to resume.
@@ -81,16 +76,16 @@ export function resolveResumeThread(sessionId: string | null, workspaceRoot: str
       "cannot resume: this Claude session has no Codex thread yet. Start a new task without --resume.",
     );
   }
-  const record = readRecord(sessionId, threadId);
-  if (record === null) {
+  const recordedCwd = readRecordedCwd(sessionId, threadId);
+  if (recordedCwd === null) {
     throw new UsageError(
       `cannot resume: thread ${threadId} was not started from this Claude session. Start a new task, or use \`codex resume ${threadId}\` in a terminal.`,
     );
   }
-  const root = canonicalRoot(workspaceRoot);
-  if (record.cwd !== root) {
+  const root = canonicalWorkspaceRoot(workspaceRoot);
+  if (recordedCwd !== root) {
     throw new UsageError(
-      `cannot resume: thread ${threadId} belongs to ${record.cwd}, not ${root}. Pass --cwd ${record.cwd} to resume it there.`,
+      `cannot resume: thread ${threadId} belongs to ${recordedCwd}, not ${root}. Pass --cwd ${recordedCwd} to resume it there.`,
     );
   }
   return threadId;

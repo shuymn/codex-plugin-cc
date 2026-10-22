@@ -37,8 +37,8 @@ import {
 } from "./lib/git.ts";
 import { parseReviewOutput, renderReviewResult } from "./lib/review-render.ts";
 import { recordThread, resolveResumeThread } from "./lib/thread-store.ts";
-import { InterruptedError, ReapError } from "./lib/process-group.ts";
-import { importClaudeSession, resolveClaudeSessionPath, TransferError } from "./lib/transfer.ts";
+import { InterruptedError } from "./lib/process-group.ts";
+import { importClaudeSession, resolveClaudeSessionPath } from "./lib/transfer.ts";
 
 const EXIT_CODEX_FAILED = 1;
 const EXIT_USAGE = 2;
@@ -543,13 +543,10 @@ try {
     process.exitCode = fail(EXIT_CODEX_NOT_FOUND, `${error.message} Run /codex:setup.`);
   } else if (error instanceof CodexFailure) {
     process.exitCode = fail(EXIT_CODEX_FAILED, error.message, error.detail);
-  } else if (error instanceof ReapError) {
-    process.exitCode = fail(EXIT_CODEX_FAILED, error.message);
   } else if (error instanceof InterruptedError) {
     process.exitCode = signalExitCode(error.signal);
-  } else if (error instanceof TransferError) {
-    process.exitCode = fail(EXIT_CODEX_FAILED, error.message);
   } else {
+    // Everything else, such as TransferError and ReapError, is a Codex failure.
     process.exitCode = fail(EXIT_CODEX_FAILED, error instanceof Error ? error.message : String(error));
   }
 }
