@@ -43,31 +43,36 @@ const CHANGED_DURING_REVIEW =
 
 // --------------------------------------------------------------- planning
 
-export type BaseChoice = { tree: string; replaced: "approved" | "start" | null };
+// Why a review cannot cover everything since the expected baseline:
+// approved-lost / start-lost: that recorded tree was pruned by gc;
+// unrecorded: the session recorded no baseline here, so the base is HEAD.
+export type BaseNote = "approved-lost" | "start-lost" | "unrecorded";
+
+export type BaseChoice = { tree: string; note: BaseNote | null };
 
 // The tree the change is measured from: the last approved snapshot, else the
 // session's starting tree, else HEAD, else the empty tree. A recorded tree
-// that is no longer in the object database (pruned by gc) is skipped and
-// reported through `replaced`.
+// that is no longer in the object database (pruned by gc) is skipped. Every
+// base short of a recorded one comes with a note for Codex and the user.
 export function chooseBase(
   workspace: WorkspaceState,
   repo: { exists: (tree: string) => boolean; head: () => string | null; empty: () => string | null },
 ): BaseChoice | null {
-  let replaced: BaseChoice["replaced"] = null;
-  for (const [tree, kind] of [
-    [workspace.approvedTree, "approved"],
-    [workspace.startTree, "start"],
+  let lost: BaseNote | null = null;
+  for (const [tree, note] of [
+    [workspace.approvedTree, "approved-lost"],
+    [workspace.startTree, "start-lost"],
   ] as const) {
     if (tree === undefined) {
       continue;
     }
     if (repo.exists(tree)) {
-      return { tree, replaced };
+      return { tree, note: lost };
     }
-    replaced ??= kind;
+    lost ??= note;
   }
   const fallback = repo.head() ?? repo.empty();
-  return fallback === null ? null : { tree: fallback, replaced };
+  return fallback === null ? null : { tree: fallback, note: lost ?? "unrecorded" };
 }
 
 export type ReviewScope =
@@ -87,11 +92,11 @@ export type ReviewPlan =
       approvable: boolean;
       // Submodules whose contents the review must check by hand.
       submodules: string[];
-      baseReplaced: BaseChoice["replaced"];
+      baseNote: BaseNote | null;
     };
 
 export function planReview(snapshot: Snapshot, approvedTree: string | undefined, base: BaseChoice | null): ReviewPlan {
-  const baseReplaced = base?.replaced ?? null;
+  const baseNote = base?.note ?? null;
   if (snapshot.kind === "not-git") {
     return {
       kind: "review",
@@ -99,7 +104,7 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
       current: null,
       approvable: false,
       submodules: [],
-      baseReplaced: null,
+      baseNote: null,
     };
   }
   if (snapshot.kind === "failed" || base === null) {
@@ -109,7 +114,7 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
       current: null,
       approvable: false,
       submodules: snapshot.kind === "failed" ? snapshot.submodules : [],
-      baseReplaced,
+      baseNote,
     };
   }
   const { tree } = snapshot;
@@ -122,14 +127,15 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
     current: tree,
     approvable: true,
     submodules: [],
-    baseReplaced,
+    baseNote,
   };
 }
 
 // ----------------------------------------------------------------- prompt
 
-// Keeps the message from closing its data block: no "<" survives.
-export function encodeFinalMessage(message: string): string {
+// Keeps text from the repository or from Claude from closing a data block
+// of the prompt: no "<" survives.
+export function encodeData(message: string): string {
   return message.replaceAll("<", "&lt;");
 }
 
@@ -140,10 +146,17 @@ function treeId(value: string): string {
   return value;
 }
 
-function baseLostNote(replaced: "approved" | "start"): string {
-  return replaced === "approved"
-    ? "The previously approved baseline is no longer in the repository, so this review covers only the changes since an older baseline or HEAD."
-    : "The tree this session started from is no longer in the repository, so this review covers only the changes since HEAD.";
+const BASE_NOTES: Readonly<Record<BaseNote, string>> = {
+  "approved-lost":
+    "The previously approved baseline is no longer in the repository, so this review covers only the changes since an older baseline or HEAD.",
+  "start-lost":
+    "The tree this session started from is no longer in the repository, so this review covers only the changes since HEAD.",
+  unrecorded:
+    "No baseline was recorded for this workspace in this session, so this review covers only the changes since HEAD; commits before HEAD are not reviewed.",
+};
+
+function baseNoteText(note: BaseNote): string {
+  return BASE_NOTES[note];
 }
 
 function scopeText(plan: Extract<ReviewPlan, { kind: "review" }>): string {
@@ -169,12 +182,12 @@ function scopeText(plan: Extract<ReviewPlan, { kind: "review" }>): string {
       "Work out what changed from Claude's final message and check what you can by reading those files.",
     );
   }
-  if (plan.baseReplaced !== null) {
-    lines.push(baseLostNote(plan.baseReplaced));
+  if (plan.baseNote !== null) {
+    lines.push(baseNoteText(plan.baseNote));
   }
   if (plan.submodules.length > 0) {
     lines.push(
-      `The repository has submodules: ${plan.submodules.map((sub) => JSON.stringify(sub)).join(", ")}.`,
+      `The repository has submodules: ${plan.submodules.map((sub) => encodeData(JSON.stringify(sub))).join(", ")}.`,
       "The diff above shows only each submodule's commit, so also review the uncommitted changes inside them (for example `git -C <path> status` and `git -C <path> diff`).",
     );
   }
@@ -185,7 +198,7 @@ export function buildPrompt(plan: Extract<ReviewPlan, { kind: "review" }>, final
   const template = fs.readFileSync(path.join(PLUGIN_ROOT, "prompts", "stop-review-gate.md"), "utf8");
   return interpolate(template, {
     REVIEW_SCOPE: scopeText(plan),
-    CLAUDE_FINAL_MESSAGE: finalMessage ? encodeFinalMessage(finalMessage) : "(no message)",
+    CLAUDE_FINAL_MESSAGE: finalMessage ? encodeData(finalMessage) : "(no message)",
   });
 }
 
@@ -241,7 +254,7 @@ export function decide(
   outcome: ReviewOutcome,
   blocks: number | null,
 ): Decision {
-  const note = plan.baseReplaced === null ? undefined : baseLostNote(plan.baseReplaced);
+  const note = plan.baseNote === null ? undefined : baseNoteText(plan.baseNote);
   const withNote = (response: HookResponse): HookResponse => {
     const messages = [response.systemMessage, note].filter((text) => text !== undefined);
     return messages.length > 0 ? { ...response, systemMessage: capReason(messages.join("\n\n")) } : response;
