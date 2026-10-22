@@ -2,19 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "verdict",
-    "summary",
-    "findings",
-    "next_steps"
-  ],
+  "required": ["verdict", "summary", "findings", "next_steps"],
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": [
-        "approve",
-        "needs-attention"
-      ]
+      "enum": ["approve", "needs-attention"]
     },
     "summary": {
       "type": "string",
@@ -25,25 +17,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "severity",
-          "title",
-          "body",
-          "file",
-          "line_start",
-          "line_end",
-          "confidence",
-          "recommendation"
-        ],
+        "required": ["severity", "title", "body", "file", "line_start", "line_end", "confidence", "recommendation"],
         "properties": {
           "severity": {
             "type": "string",
-            "enum": [
-              "critical",
-              "high",
-              "medium",
-              "low"
-            ]
+            "enum": ["critical", "high", "medium", "low"]
           },
           "title": {
             "type": "string",

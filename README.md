@@ -317,3 +317,7 @@ Yes. If you already use Codex, the plugin picks up the same [configuration](#com
 Yes. Because the plugin uses your local Codex CLI, your existing sign-in method and config still apply.
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
+
+## Development
+
+The tools are pinned in `mise.toml`. After cloning, run `mise install`, then `pnpm install` and `pnpm exec lefthook install` to set up the dependencies and git hooks.

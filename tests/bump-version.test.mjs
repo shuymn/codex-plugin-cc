@@ -25,17 +25,6 @@ function makeVersionFixture() {
     name: "@openai/codex-plugin-cc",
     version: "1.0.2"
   });
-  writeJson(path.join(root, "package-lock.json"), {
-    name: "@openai/codex-plugin-cc",
-    version: "1.0.2",
-    lockfileVersion: 3,
-    packages: {
-      "": {
-        name: "@openai/codex-plugin-cc",
-        version: "1.0.2"
-      }
-    }
-  });
   writeJson(path.join(root, "plugins", "codex", ".claude-plugin", "plugin.json"), {
     name: "codex",
     version: "1.0.2"
@@ -64,8 +53,6 @@ test("bump-version updates every release manifest", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readJson(path.join(root, "package.json")).version, "1.2.3");
-  assert.equal(readJson(path.join(root, "package-lock.json")).version, "1.2.3");
-  assert.equal(readJson(path.join(root, "package-lock.json")).packages[""].version, "1.2.3");
   assert.equal(readJson(path.join(root, "plugins", "codex", ".claude-plugin", "plugin.json")).version, "1.2.3");
   assert.equal(readJson(path.join(root, ".claude-plugin", "marketplace.json")).metadata.version, "1.2.3");
   assert.equal(readJson(path.join(root, ".claude-plugin", "marketplace.json")).plugins[0].version, "1.2.3");
