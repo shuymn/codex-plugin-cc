@@ -1,20 +1,20 @@
 {
-  "name": "@openai/codex-plugin-cc",
-  "version": "1.0.6",
+  "name": "codex-plugin-cc",
+  "version": "2.0.0",
   "private": true,
   "description": "Use Codex from Claude Code to review code or delegate tasks.",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "bump-version": "node scripts/bump-version.mjs",
-    "check-version": "node scripts/bump-version.mjs --check",
+    "bump-version": "node scripts/bump-version.ts",
+    "check-version": "node scripts/bump-version.ts --check",
     "lint": "oxlint --type-aware --deny-warnings",
     "lint:fix": "oxlint --type-aware --fix",
     "fmt": "oxfmt --check",
     "fmt:fix": "oxfmt",
-    "prebuild": "mkdir -p plugins/codex/.generated/app-server-types && codex app-server generate-ts --out plugins/codex/.generated/app-server-types",
-    "build": "tsc -p tsconfig.app-server.json",
-    "test": "node --test tests/*.test.mjs"
+    "typecheck": "tsc",
+    "test": "node --test tests/*.test.ts",
+    "test:cli-contract": "CODEX_CLI_CONTRACT=1 node --test tests/cli-contract.test.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.3",
@@ -24,7 +24,7 @@
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   },
   "engines": {
     "node": "24.x"

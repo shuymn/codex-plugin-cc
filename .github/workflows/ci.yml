@@ -42,9 +42,12 @@ jobs:
       - name: Run formatter
         run: pnpm run fmt
 
-      # Generates the app-server types with the Codex CLI, then type-checks against them.
-      - name: Run build
-        run: pnpm run build
+      - name: Run type check
+        run: pnpm run typecheck
 
       - name: Run tests
         run: pnpm run test
+
+      # Checks the argv the plugin builds against the Codex CLI pinned in mise.toml, without network access.
+      - name: Run Codex CLI contract tests
+        run: pnpm run test:cli-contract

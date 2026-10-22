@@ -1,37 +1,20 @@
 ---
-description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
-argument-hint: '[--enable-review-gate|--disable-review-gate]'
-allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
+description: Check whether the local Codex CLI is ready, and turn the stop-time review gate on or off
+argument-hint: "[--enable-review-gate | --disable-review-gate] [--cwd <dir>]"
+disable-model-invocation: true
+allowed-tools: Bash(node:*)
 ---
 
-Run:
+Run the adapter exactly once, in the foreground, with this Bash command:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex.ts" setup <<'CODEX_PLUGIN_ARGS_<NONCE>'
+$ARGUMENTS
+CODEX_PLUGIN_ARGS_<NONCE>
 ```
 
-If the result says Codex is unavailable and npm is available:
-- Use `AskUserQuestion` exactly once to ask whether Claude should install Codex now.
-- Put the install option first and suffix it with `(Recommended)`.
-- Use these two options:
-  - `Install Codex (Recommended)`
-  - `Skip for now`
-- If the user chooses install, run:
+Command rules:
+- Replace both `<NONCE>` markers with the same fresh random string of at least 16 letters and digits that does not appear in the arguments.
+- Keep the arguments between the two marker lines exactly as given.
 
-```bash
-npm install -g @openai/codex
-```
-
-- Then rerun:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
-```
-
-If Codex is already installed or npm is unavailable:
-- Do not ask about installation.
-
-Output rules:
-- Present the final setup output to the user.
-- If installation was skipped, present the original setup output.
-- If Codex is installed but not authenticated, preserve the guidance to run `!codex login`.
+Present stdout to the user, including its next steps. Do not install Codex or log in on the user's behalf. If Codex is not logged in, keep the suggestion to run `!codex login`. On failure, show the first line of stderr.
