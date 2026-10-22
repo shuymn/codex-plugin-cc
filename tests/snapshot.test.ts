@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -154,33 +155,82 @@ test("a Git error inside a repository makes the snapshot fail, not look like a n
 });
 
 test("a snapshot past its deadline fails", () => {
-  const snapshot = takeSnapshot(makeRepo(fake.env), 0);
+  const snapshot = takeSnapshot(makeRepo(fake.env), { timeoutMs: 0 });
   assert.equal(snapshot.kind, "failed");
   assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /timed out/);
 });
 
-test("submodules with uncommitted changes are listed; committed submodule changes show in the tree", () => {
+// A script that leaves a marker file when Git runs it.
+function probe(name: string): { script: string; marker: string } {
+  const dir = makeTempDir();
+  const marker = path.join(dir, `${name}-ran`);
+  const script = path.join(dir, `${name}.sh`);
+  fs.writeFileSync(script, `#!/bin/sh\n/usr/bin/touch "${marker}"\nexit 1\n`, { mode: 0o755 });
+  return { script, marker };
+}
+
+test("a repository with submodules is not snapshotted, and nothing inside the submodules runs", () => {
   const sub = makeRepo(fake.env);
   const repo = makeRepo(fake.env);
   git(repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "libs/sub dir"], fake.env);
   git(repo, ["commit", "-q", "-m", "add submodule"], fake.env);
-  const clean = takeSnapshot(repo);
-  assert.deepEqual(clean.kind === "tree" ? clean.dirtySubmodules : null, []);
-
   const inner = path.join(repo, "libs", "sub dir");
+  const fsmonitor = probe("inner-fsmonitor");
+  git(inner, ["config", "core.fsmonitor", fsmonitor.script], fake.env);
+  const filter = probe("inner-filter");
+  git(inner, ["config", "filter.probe.clean", filter.script], fake.env);
+  write(inner, ".gitattributes", "*.md filter=probe\n");
   write(inner, "README.md", "changed inside\n");
-  const dirty = takeSnapshot(repo);
-  assert.equal(treeOf(dirty), treeOf(clean));
-  assert.deepEqual(dirty.kind === "tree" ? dirty.dirtySubmodules : null, ["libs/sub dir"]);
 
-  git(inner, ["commit", "-q", "-am", "inner commit"], fake.env);
-  const committed = takeSnapshot(repo);
-  assert.deepEqual(committed.kind === "tree" ? committed.dirtySubmodules : null, []);
-  assert.notEqual(treeOf(committed), treeOf(clean));
+  const snapshot = takeSnapshot(repo);
+  assert.equal(snapshot.kind, "failed");
+  assert.deepEqual(snapshot.kind === "failed" ? snapshot.submodules : null, ["libs/sub dir"]);
+  assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /submodule/);
+  assert.equal(fs.existsSync(fsmonitor.marker), false);
+  assert.equal(fs.existsSync(filter.marker), false);
+});
 
-  write(inner, "untracked.txt", "x\n");
-  const untracked = takeSnapshot(repo);
-  assert.deepEqual(untracked.kind === "tree" ? untracked.dirtySubmodules : null, ["libs/sub dir"]);
+test("the snapshot runs neither the repository's fsmonitor nor its hooks", () => {
+  const repo = makeRepo(fake.env);
+  const fsmonitor = probe("fsmonitor");
+  const hook = probe("post-index-change");
+  git(repo, ["config", "core.fsmonitor", fsmonitor.script], fake.env);
+  fs.copyFileSync(hook.script, path.join(repo, ".git", "hooks", "post-index-change"));
+  fs.chmodSync(path.join(repo, ".git", "hooks", "post-index-change"), 0o755);
+  write(repo, "README.md", "edited\n");
+  write(repo, "new.txt", "new\n");
+
+  treeOf(takeSnapshot(repo));
+  assert.equal(fs.existsSync(fsmonitor.marker), false);
+  assert.equal(fs.existsSync(hook.marker), false);
+
+  // The probes do run when Git is used plainly, so the test can fail.
+  git(repo, ["add", "-A"], fake.env);
+  assert.equal(fs.existsSync(fsmonitor.marker), true);
+  assert.equal(fs.existsSync(hook.marker), true);
+});
+
+test("a filter attribute added after the filter check still does not run the filter", () => {
+  const repo = makeRepo(fake.env);
+  const filter = probe("late-filter");
+  git(repo, ["config", "filter.late.clean", filter.script], fake.env);
+  git(repo, ["config", "filter.late.process", filter.script], fake.env);
+  git(repo, ["config", "filter.late.required", "true"], fake.env);
+  const snapshot = takeSnapshot(repo, {
+    beforeAdd: () => {
+      write(repo, ".gitattributes", "*.dat filter=late\n");
+      write(repo, "a.dat", "data\n");
+    },
+  });
+  treeOf(snapshot);
+  assert.equal(fs.existsSync(filter.marker), false);
+  // Plain Git runs the filter, so the test can fail.
+  spawnSync("git", ["add", "-A"], {
+    cwd: repo,
+    env: { ...fake.env, GIT_INDEX_FILE: path.join(makeTempDir(), "index") },
+    timeout: 10_000,
+  });
+  assert.equal(fs.existsSync(filter.marker), true);
 });
 
 test("treeExists and isTreeId", () => {

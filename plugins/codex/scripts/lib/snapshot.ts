@@ -2,6 +2,12 @@
 // (not ignored), and deleted files all count. The tree is built in a temporary
 // index, so the user's index, refs, and working tree are never written. The
 // objects it writes are unreferenced loose objects that `git gc` prunes.
+//
+// The hook runs outside Codex's sandbox, so the snapshot must not start any
+// program the repository's configuration names: every git call turns off
+// fsmonitor and hooks, files with a filter attribute make the snapshot fail,
+// every configured filter driver is turned off, and
+// repositories with submodules are not snapshotted at all.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -10,40 +16,67 @@ import path from "node:path";
 import { git, type GitResult } from "./git.ts";
 
 export type Snapshot =
-  // dirtySubmodules: submodule paths with uncommitted changes, which the tree
-  // (holding only each submodule's commit) cannot show.
-  | { kind: "tree"; tree: string; dirtySubmodules: string[] }
+  | { kind: "tree"; tree: string }
   | { kind: "not-git" }
-  // Inside a repository, but no tree could be built.
-  | { kind: "failed"; reason: string };
+  // Inside a repository, but no tree was built. submodules: the repository's
+  // submodule paths, whose contents the caller must review some other way.
+  | { kind: "failed"; reason: string; submodules: string[] };
+
+export type SnapshotOptions = {
+  timeoutMs?: number;
+  // Test seam: runs right before `git add`, after every check.
+  beforeAdd?: () => void;
+};
 
 export const SNAPSHOT_TIMEOUT_MS = 30_000;
 
 const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-// Keeps `git status` from refreshing the user's index as a side effect.
+// Configuration that would otherwise run programs: fsmonitor during index
+// reads, hooks such as post-index-change during index writes. The untracked
+// cache is off so the temporary index never depends on the user's.
+const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"];
+
+// Keeps git from taking optional locks or refreshing the user's index.
 const READ_ONLY_ENV = { GIT_OPTIONAL_LOCKS: "0" };
 
 export function isTreeId(value: unknown): value is string {
   return typeof value === "string" && TREE_ID.test(value);
 }
 
-class SnapshotFailure extends Error {}
+function safeGit(
+  root: string,
+  args: readonly string[],
+  options: { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number } = {},
+) {
+  return git(root, [...SAFE_CONFIG, ...args], {
+    ...options,
+    env: { ...process.env, ...READ_ONLY_ENV, ...options.env },
+  });
+}
 
-function runner(root: string, timeoutMs: number) {
+class SnapshotFailure extends Error {
+  readonly submodules: string[];
+
+  constructor(message: string, submodules: string[] = []) {
+    super(message);
+    this.submodules = submodules;
+  }
+}
+
+type Run = (args: readonly string[], options?: { env?: Record<string, string>; input?: string }) => GitResult;
+
+function runner(root: string, timeoutMs: number): Run {
   const deadline = Date.now() + timeoutMs;
-  return (args: readonly string[], options: { env?: Record<string, string>; input?: string } = {}): GitResult => {
+  const timedOut = () => new SnapshotFailure(`the snapshot timed out after ${timeoutMs / 1000} seconds`);
+  return (args, options = {}) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new SnapshotFailure(`the snapshot timed out after ${timeoutMs / 1000} seconds`);
+      throw timedOut();
     }
-    const result = git(root, args, {
-      env: { ...process.env, ...READ_ONLY_ENV, ...options.env },
-      timeoutMs: remaining,
-      ...(options.input === undefined ? {} : { input: options.input }),
-    });
+    const result = safeGit(root, args, { ...options, timeoutMs: remaining });
     if (result.status === null && Date.now() >= deadline) {
-      throw new SnapshotFailure(`the snapshot timed out after ${timeoutMs / 1000} seconds`);
+      throw timedOut();
     }
     return result;
   };
@@ -57,9 +90,23 @@ function check(result: GitResult, what: string): string {
   return result.stdout;
 }
 
+// Gitlink entries in the index. Looking inside a submodule would run git
+// there, under the submodule's own configuration, so the snapshot stops here.
+function submodulePaths(run: Run): string[] {
+  const paths = new Set<string>();
+  // -z --stage records: "<mode> <object> <stage>\t<path>".
+  for (const record of check(run(["ls-files", "-z", "--stage"]), "ls-files").split("\0")) {
+    const tab = record.indexOf("\t");
+    if (tab !== -1 && record.startsWith("160000 ")) {
+      paths.add(record.slice(tab + 1));
+    }
+  }
+  return [...paths];
+}
+
 // Paths `git add -A` would read whose `filter` attribute is set. Building the
 // tree would run that filter (Git LFS, for example) outside Codex's sandbox.
-function filteredPaths(run: ReturnType<typeof runner>): string[] {
+function filteredPaths(run: Run): string[] {
   const files = check(run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]), "ls-files");
   if (!files) {
     return [];
@@ -75,58 +122,78 @@ function filteredPaths(run: ReturnType<typeof runner>): string[] {
   return found;
 }
 
-// Reads `git status --porcelain=v2 -z`, whose third field is "S<c><m><u>" for
-// a submodule: m = tracked changes inside it, u = untracked files inside it.
-function findDirtySubmodules(run: ReturnType<typeof runner>): string[] {
-  const records = check(run(["status", "--porcelain=v2", "-z", "--ignore-submodules=none"]), "status").split("\0");
-  const dirty: string[] = [];
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index] ?? "";
-    // Fields before the path: 8 for changed, 9 for renamed, 10 for unmerged.
-    const leading = { "1": 8, "2": 9, u: 10 }[record.slice(0, 1)];
-    if (leading === undefined || record[1] !== " ") {
-      continue;
-    }
-    if (record.startsWith("2 ")) {
-      index += 1; // the original path of a rename follows as its own record
-    }
-    const fields = record.split(" ");
-    const sub = fields[2] ?? "";
-    if (sub.startsWith("S") && (sub[2] === "M" || sub[3] === "U")) {
-      dirty.push(fields.slice(leading).join(" "));
+// `-c` options that turn off every configured filter driver, so a filter
+// attribute that appears after filteredPaths ran still cannot start one.
+// Empty clean and process commands make Git store the file as is.
+function disabledFilterConfig(run: Run): string[] {
+  const result = run(["config", "-z", "--name-only", "--get-regexp", "^filter\\."]);
+  // Exit 1: no filter driver is configured.
+  if (result.status === 1) {
+    return [];
+  }
+  const args: string[] = [];
+  const drivers = new Set<string>();
+  for (const key of check(result, "config").split("\0")) {
+    const lastDot = key.lastIndexOf(".");
+    if (key.startsWith("filter.") && lastDot > "filter.".length) {
+      drivers.add(key.slice("filter.".length, lastDot));
     }
   }
-  return dirty;
+  for (const driver of drivers) {
+    // `-c name=value` splits at the first "=", so such a name cannot be overridden.
+    if (driver.includes("=")) {
+      throw new SnapshotFailure("a configured filter driver cannot be turned off for the snapshot");
+    }
+    args.push(
+      "-c",
+      `filter.${driver}.clean=`,
+      "-c",
+      `filter.${driver}.process=`,
+      "-c",
+      `filter.${driver}.required=false`,
+    );
+  }
+  return args;
 }
 
-export function takeSnapshot(root: string, timeoutMs = SNAPSHOT_TIMEOUT_MS): Snapshot {
+export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snapshot {
   let tempDir: string | null = null;
   try {
-    const run = runner(root, timeoutMs);
-    const inside = run(["rev-parse", "--is-inside-work-tree"]);
+    const plainRun = runner(root, options.timeoutMs ?? SNAPSHOT_TIMEOUT_MS);
+    const inside = plainRun(["rev-parse", "--is-inside-work-tree"]);
     if (inside.status !== 0 || inside.stdout.trim() !== "true") {
       return { kind: "not-git" };
     }
+    // Not only `git add`: any command that writes the index may re-read a
+    // racily clean file through its filter, so every later call has the
+    // drivers turned off.
+    const noFilters = disabledFilterConfig(plainRun);
+    const run: Run = (args, runOptions) => plainRun([...noFilters, ...args], runOptions);
+
+    const submodules = submodulePaths(run);
+    if (submodules.length > 0) {
+      throw new SnapshotFailure("the repository has submodules, which the snapshot does not look into", submodules);
+    }
     const filtered = filteredPaths(run);
     if (filtered.length > 0) {
-      return { kind: "failed", reason: `files use a Git filter (${filtered[0]}), which the snapshot will not run` };
+      throw new SnapshotFailure(`files use a Git filter (${filtered[0]}), which the snapshot will not run`);
     }
-    const dirtySubmodules = findDirtySubmodules(run);
 
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-snapshot-"));
     const env = { GIT_INDEX_FILE: path.join(tempDir, "index") };
-    const head = run(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"]);
-    const readArgs = head.status === 0 ? ["read-tree", head.stdout.trim()] : ["read-tree", "--empty"];
-    check(run(readArgs, { env }), "read-tree");
+    // A HEAD commit whose tree is missing must fail, not look like a new repository.
+    const hasHead = run(["rev-parse", "--verify", "--quiet", "HEAD"]).status === 0;
+    check(run(hasHead ? ["read-tree", "HEAD"] : ["read-tree", "--empty"], { env }), "read-tree");
+    options.beforeAdd?.();
     check(run(["add", "-A"], { env }), "add");
     const tree = check(run(["write-tree"], { env }), "write-tree").trim();
     if (!isTreeId(tree)) {
-      return { kind: "failed", reason: "git write-tree returned no tree id" };
+      throw new SnapshotFailure("git write-tree returned no tree id");
     }
-    return { kind: "tree", tree, dirtySubmodules };
+    return { kind: "tree", tree };
   } catch (error) {
     if (error instanceof SnapshotFailure) {
-      return { kind: "failed", reason: error.message };
+      return { kind: "failed", reason: error.message, submodules: error.submodules };
     }
     throw error;
   } finally {
@@ -138,14 +205,14 @@ export function takeSnapshot(root: string, timeoutMs = SNAPSHOT_TIMEOUT_MS): Sna
 
 // The tree of HEAD, or null when HEAD has no commit yet (or outside Git).
 export function headTree(root: string): string | null {
-  const result = git(root, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"]);
+  const result = safeGit(root, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"]);
   const tree = result.stdout.trim();
   return result.status === 0 && isTreeId(tree) ? tree : null;
 }
 
 // The empty tree in the repository's hash format.
 export function emptyTree(root: string): string | null {
-  const result = git(root, ["hash-object", "-t", "tree", "--stdin"], { input: "" });
+  const result = safeGit(root, ["hash-object", "-t", "tree", "--stdin"], { input: "" });
   const tree = result.stdout.trim();
   return result.status === 0 && isTreeId(tree) ? tree : null;
 }
@@ -155,6 +222,6 @@ export function treeExists(root: string, tree: string): boolean {
   if (!isTreeId(tree)) {
     return false;
   }
-  const result = git(root, ["cat-file", "-t", tree]);
+  const result = safeGit(root, ["cat-file", "-t", tree]);
   return result.status === 0 && result.stdout.trim() === "tree";
 }
