@@ -37,21 +37,27 @@ const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 // cache is off so the temporary index never depends on the user's.
 const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"];
 
-// Keeps git from taking optional locks or refreshing the user's index.
-const READ_ONLY_ENV = { GIT_OPTIONAL_LOCKS: "0" };
+// GIT_OPTIONAL_LOCKS: no optional locks, so the user's index is never
+// refreshed. GIT_NO_LAZY_FETCH: a partial clone never fetches a missing object
+// (which would run the remote's transport, such as core.sshCommand). LC_ALL:
+// error messages stay in English so "not a git repository" can be recognized.
+const SAFE_ENV = { GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", LC_ALL: "C" };
 
 export function isTreeId(value: unknown): value is string {
   return typeof value === "string" && TREE_ID.test(value);
 }
 
+// --no-lazy-fetch (Git 2.45 and later) makes an older Git fail every call
+// instead of silently fetching, so the gate then reviews without a snapshot.
 function safeGit(
   root: string,
   args: readonly string[],
   options: { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number } = {},
 ) {
-  return git(root, [...SAFE_CONFIG, ...args], {
+  return git(root, ["--no-lazy-fetch", ...SAFE_CONFIG, ...args], {
+    timeoutMs: SNAPSHOT_TIMEOUT_MS,
     ...options,
-    env: { ...process.env, ...READ_ONLY_ENV, ...options.env },
+    env: { ...process.env, ...SAFE_ENV, ...options.env },
   });
 }
 
@@ -90,12 +96,14 @@ function check(result: GitResult, what: string): string {
   return result.stdout;
 }
 
-// Gitlink entries in the index. Looking inside a submodule would run git
-// there, under the submodule's own configuration, so the snapshot stops here.
-function submodulePaths(run: Run): string[] {
+// Gitlink entries (submodules and embedded repositories) in an index: the
+// user's, or the temporary one with env. Looking inside a submodule would run
+// git there, under the submodule's own configuration, so the snapshot stops.
+function submodulePaths(run: Run, env?: Record<string, string>): string[] {
   const paths = new Set<string>();
   // -z --stage records: "<mode> <object> <stage>\t<path>".
-  for (const record of check(run(["ls-files", "-z", "--stage"]), "ls-files").split("\0")) {
+  const listing = run(["ls-files", "-z", "--stage"], env === undefined ? {} : { env });
+  for (const record of check(listing, "ls-files").split("\0")) {
     const tab = record.indexOf("\t");
     if (tab !== -1 && record.startsWith("160000 ")) {
       paths.add(record.slice(tab + 1));
@@ -156,13 +164,30 @@ function disabledFilterConfig(run: Run): string[] {
   return args;
 }
 
+function rejectSubmodules(submodules: string[]): void {
+  if (submodules.length > 0) {
+    throw new SnapshotFailure("the repository has submodules, which the snapshot does not look into", submodules);
+  }
+}
+
+// True only when Git confirmed the directory is not in a work tree. Any other
+// failure, such as a broken config, happens inside a repository.
+function isOutsideWorkTree(result: GitResult): boolean {
+  return result.status === 0
+    ? result.stdout.trim() === "false"
+    : result.status === 128 && /not a git repository/.test(result.stderr);
+}
+
 export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snapshot {
   let tempDir: string | null = null;
   try {
     const plainRun = runner(root, options.timeoutMs ?? SNAPSHOT_TIMEOUT_MS);
     const inside = plainRun(["rev-parse", "--is-inside-work-tree"]);
-    if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    if (isOutsideWorkTree(inside)) {
       return { kind: "not-git" };
+    }
+    if (inside.status !== 0) {
+      check(inside, "rev-parse");
     }
     // Not only `git add`: any command that writes the index may re-read a
     // racily clean file through its filter, so every later call has the
@@ -170,10 +195,7 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     const noFilters = disabledFilterConfig(plainRun);
     const run: Run = (args, runOptions) => plainRun([...noFilters, ...args], runOptions);
 
-    const submodules = submodulePaths(run);
-    if (submodules.length > 0) {
-      throw new SnapshotFailure("the repository has submodules, which the snapshot does not look into", submodules);
-    }
+    rejectSubmodules(submodulePaths(run));
     const filtered = filteredPaths(run);
     if (filtered.length > 0) {
       throw new SnapshotFailure(`files use a Git filter (${filtered[0]}), which the snapshot will not run`);
@@ -184,8 +206,12 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     // A HEAD commit whose tree is missing must fail, not look like a new repository.
     const hasHead = run(["rev-parse", "--verify", "--quiet", "HEAD"]).status === 0;
     check(run(hasHead ? ["read-tree", "HEAD"] : ["read-tree", "--empty"], { env }), "read-tree");
+    // HEAD's submodules, even ones removed from the user's index.
+    rejectSubmodules(submodulePaths(run, env));
     options.beforeAdd?.();
     check(run(["add", "-A"], { env }), "add");
+    // Untracked embedded repositories, which `git add` records as gitlinks.
+    rejectSubmodules(submodulePaths(run, env));
     const tree = check(run(["write-tree"], { env }), "write-tree").trim();
     if (!isTreeId(tree)) {
       throw new SnapshotFailure("git write-tree returned no tree id");
@@ -224,4 +250,15 @@ export function treeExists(root: string, tree: string): boolean {
   }
   const result = safeGit(root, ["cat-file", "-t", tree]);
   return result.status === 0 && result.stdout.trim() === "tree";
+}
+
+// The tree a session starts from: HEAD's, the empty tree before the first
+// commit, or null outside Git (and when Git fails).
+export function sessionStartTree(root: string): string | null {
+  const inside = safeGit(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return null;
+  }
+  const head = safeGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  return head.status === 0 ? headTree(root) : emptyTree(root);
 }

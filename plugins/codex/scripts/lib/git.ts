@@ -9,6 +9,8 @@ export type GitOptions = { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: 
 
 // Large enough for `git ls-files -z` of a big repository.
 const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
+// No git call may hang a hook or command forever.
+const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 
 // Repository-derived values only ever go to git as argv, never through a shell.
 export function git(cwd: string, args: readonly string[], options: GitOptions = {}): GitResult {
@@ -20,7 +22,7 @@ export function git(cwd: string, args: readonly string[], options: GitOptions = 
     maxBuffer: MAX_GIT_OUTPUT,
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.input === undefined ? {} : { input: options.input }),
-    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+    timeout: options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
   });
   return { status: result.error ? null : result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

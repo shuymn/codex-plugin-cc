@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -9,6 +8,7 @@ import {
   emptyTree,
   headTree,
   isTreeId,
+  sessionStartTree,
   type Snapshot,
   takeSnapshot,
   treeExists,
@@ -107,16 +107,25 @@ test("taking a snapshot leaves the index, refs, and working tree untouched", () 
   fs.rmSync(path.join(repo, "staged.txt"));
   git(repo, ["tag", "v1"], fake.env);
 
+  // The test's own status must not refresh the index it compares, and the
+  // temporary directory is private so parallel test files cannot add entries.
+  const tmp = makeTempDir();
   const state = () => ({
-    status: git(repo, ["status", "--porcelain=v1", "--untracked-files=all"], fake.env),
+    status: git(repo, ["status", "--porcelain=v1", "--untracked-files=all"], { ...fake.env, GIT_OPTIONAL_LOCKS: "0" }),
     index: fs.readFileSync(path.join(repo, ".git", "index")).toString("base64"),
     refs: git(repo, ["for-each-ref", "--format=%(refname) %(objectname)"], fake.env),
     head: fs.readFileSync(path.join(repo, ".git", "HEAD"), "utf8"),
     files: ["README.md", "untracked.txt"].map((file) => fs.readFileSync(path.join(repo, file), "utf8")),
-    tempEntries: fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith("codex-plugin-snapshot-")),
+    tempEntries: fs.readdirSync(tmp),
   });
   const before = state();
-  treeOf(takeSnapshot(repo));
+  const savedTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  try {
+    treeOf(takeSnapshot(repo));
+  } finally {
+    process.env.TMPDIR = savedTmpdir;
+  }
   assert.deepEqual(state(), before);
 });
 
@@ -154,10 +163,23 @@ test("a Git error inside a repository makes the snapshot fail, not look like a n
   assert.equal(takeSnapshot(repo).kind, "failed");
 });
 
-test("a snapshot past its deadline fails", () => {
-  const snapshot = takeSnapshot(makeRepo(fake.env), { timeoutMs: 0 });
+test("a broken config inside a repository fails the snapshot instead of passing for a non-repository", () => {
+  const repo = makeRepo(fake.env);
+  fs.appendFileSync(path.join(repo, ".git", "config"), "[core\nbroken");
+  const snapshot = takeSnapshot(repo);
+  assert.equal(snapshot.kind, "failed", JSON.stringify(snapshot));
+});
+
+test("a snapshot whose git call runs past the deadline is stopped and fails", () => {
+  const repo = makeRepo(fake.env);
+  // Reading a FIFO with no writer blocks git until the deadline kills it.
+  spawnSync("mkfifo", [path.join(repo, ".gitignore")]);
+  const started = Date.now();
+  const snapshot = takeSnapshot(repo, { timeoutMs: 1500 });
+  const elapsed = Date.now() - started;
   assert.equal(snapshot.kind, "failed");
-  assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /timed out/);
+  assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /timed out after 1\.5 seconds/);
+  assert.ok(elapsed >= 1500 && elapsed < 10_000, String(elapsed));
 });
 
 // A script that leaves a marker file when Git runs it.
@@ -231,6 +253,60 @@ test("a filter attribute added after the filter check still does not run the fil
     timeout: 10_000,
   });
   assert.equal(fs.existsSync(filter.marker), true);
+});
+
+test("submodules missing from the user's index and untracked embedded repositories also stop the snapshot", () => {
+  const sub = makeRepo(fake.env);
+  const unstaged = makeRepo(fake.env);
+  git(unstaged, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "libs/sub"], fake.env);
+  git(unstaged, ["commit", "-q", "-m", "add submodule"], fake.env);
+  git(unstaged, ["rm", "-q", "--cached", "libs/sub"], fake.env);
+
+  const embedded = makeRepo(fake.env);
+  const inner = path.join(embedded, "tools", "inner");
+  fs.mkdirSync(inner, { recursive: true });
+  git(inner, ["init", "-q", "-b", "main"], fake.env);
+  write(inner, "a.txt", "a\n");
+  git(inner, ["add", "a.txt"], fake.env);
+  git(inner, ["commit", "-q", "-m", "inner"], fake.env);
+
+  for (const [repo, expected] of [
+    [unstaged, "libs/sub"],
+    [embedded, "tools/inner"],
+  ] as const) {
+    const snapshot = takeSnapshot(repo);
+    assert.equal(snapshot.kind, "failed", expected);
+    assert.deepEqual(snapshot.kind === "failed" ? snapshot.submodules : null, [expected]);
+  }
+});
+
+test("a partial clone never fetches a missing object, so its remote's commands do not run", () => {
+  const repo = makeRepo(fake.env);
+  const ssh = probe("ssh");
+  git(repo, ["config", "core.repositoryformatversion", "1"], fake.env);
+  git(repo, ["config", "extensions.partialclone", "origin"], fake.env);
+  git(repo, ["config", "remote.origin.url", "ssh://example.invalid/repo"], fake.env);
+  git(repo, ["config", "remote.origin.promisor", "true"], fake.env);
+  git(repo, ["config", "core.sshCommand", ssh.script], fake.env);
+
+  assert.equal(treeExists(repo, "0123456789abcdef0123456789abcdef01234567"), false);
+  const tree = git(repo, ["rev-parse", "HEAD^{tree}"], fake.env);
+  fs.rmSync(path.join(repo, ".git", "objects", tree.slice(0, 2), tree.slice(2)));
+  assert.equal(takeSnapshot(repo).kind, "failed");
+  assert.equal(fs.existsSync(ssh.marker), false);
+
+  // Plain Git does try the remote, so the test can fail.
+  spawnSync("git", ["cat-file", "-t", "0123456789abcdef0123456789abcdef01234567"], { cwd: repo, env: fake.env });
+  assert.equal(fs.existsSync(ssh.marker), true);
+});
+
+test("sessionStartTree is the HEAD tree, the empty tree before the first commit, and null outside Git", () => {
+  const repo = makeRepo(fake.env);
+  assert.equal(sessionStartTree(repo), headTree(repo));
+  const unborn = makeTempDir("codex-plugin-repo-");
+  git(unborn, ["init", "-q", "-b", "main"], fake.env);
+  assert.equal(sessionStartTree(unborn), emptyTree(unborn));
+  assert.equal(sessionStartTree(makeTempDir()), null);
 });
 
 test("treeExists and isTreeId", () => {
