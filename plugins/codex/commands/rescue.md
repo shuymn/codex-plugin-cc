@@ -6,7 +6,7 @@ allowed-tools: Bash(node:*)
 
 Run a Codex task through the plugin adapter. By default Codex may edit files in the workspace; `--read-only` keeps it to reading.
 
-If no task text and no `--prompt-file` were given, ask the user what Codex should investigate or do, and stop.
+If the arguments contain no task text, no `--prompt-file`, and no `--help` or `-h`, ask the user what Codex should investigate or do, and stop.
 
 When you invoke this command on your own initiative, write the task text as the `codex-prompting` skill describes. When the user invoked it, pass their arguments unchanged.
 

@@ -146,3 +146,24 @@ test("the plugin directory declares ES modules for Node's type stripping", () =>
   assert.equal(manifest.type, "module");
   assert.ok(fs.existsSync(path.join(ROOT, "tsconfig.json")));
 });
+
+test("rescue asks for a task only when there is no text, no --prompt-file, and no help flag", () => {
+  const { body } = readCommand("rescue.md");
+  assert.match(body, /no task text, no `--prompt-file`, and no `--help` or `-h`, ask the user/);
+});
+
+test("the README limits background runs to the review and rescue commands", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.match(readme, /`\/codex:setup` and `\/codex:transfer` always run in the foreground/);
+  assert.match(readme, /it exits 0 and reports problems/);
+  assert.match(readme, /`--cwd` only sets the directory the Codex app server starts in/);
+});
+
+test("both NOTICE files keep the original attribution and state the modifications", () => {
+  for (const file of [path.join(ROOT, "NOTICE"), path.join(PLUGIN_ROOT, "NOTICE")]) {
+    const notice = fs.readFileSync(file, "utf8");
+    assert.match(notice, /^Copyright 2026 OpenAI$/m);
+    assert.match(notice, /^This distribution includes modifications by shuymn\.$/m);
+    assert.match(notice, /Licensed under the Apache License, Version 2\.0/);
+  }
+});

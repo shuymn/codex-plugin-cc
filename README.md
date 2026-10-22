@@ -53,7 +53,7 @@ Then run:
 
 Every command reads its options first and treats the rest as text. Put options before the text, and put text that starts with `-` after `--`. An unknown leading option is an error, not text. `--help` shows a command's options.
 
-Commands run in the background by default, and Claude tells you when they finish. Add `--wait` to run in the foreground instead.
+`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead. `/codex:setup` and `/codex:transfer` always run in the foreground.
 
 ### `/codex:review`
 
@@ -115,11 +115,11 @@ Imports the current Claude Code session into a Codex thread and prints a `codex 
 /codex:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
 ```
 
-The plugin's `SessionStart` hook supplies the current transcript path, and `--source` overrides it. The source must be a `.jsonl` file under `~/.claude/projects`. Older Codex versions without session import must be updated first.
+The plugin's `SessionStart` hook supplies the current transcript path, and `--source` overrides it. The source must be a `.jsonl` file under `~/.claude/projects`. The imported thread's working directory comes from the transcript; `--cwd` only sets the directory the Codex app server starts in. Older Codex versions without session import must be updated first.
 
 ### `/codex:setup`
 
-Checks whether Codex is installed and logged in, and turns the review gate on or off for the current workspace.
+Checks whether Codex is installed and logged in, and turns the review gate on or off for the current workspace. Because it is a diagnostic, it exits 0 and reports problems such as a missing or logged-out Codex as next steps, unlike the other commands, which exit 3 when `codex` is not found.
 
 ```bash
 /codex:setup
