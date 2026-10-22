@@ -1,21 +1,18 @@
 ---
 name: codex-result-handling
-description: Internal guidance for presenting Codex helper output back to the user
+description: Internal guidance for presenting Codex adapter output back to the user
 user-invocable: false
 ---
 
 # Codex Result Handling
 
-When the helper returns Codex output:
-- Preserve the helper's verdict, summary, findings, and next steps structure.
-- For review output, present findings first and keep them ordered by severity.
-- Use the file paths and line numbers exactly as the helper reports them.
-- Preserve evidence boundaries. If Codex marked something as an inference, uncertainty, or follow-up question, keep that distinction.
-- Preserve output sections when the prompt asked for them, such as observed facts, inferences, open questions, touched files, or next steps.
-- If there are no findings, say that explicitly and keep the residual-risk note brief.
-- If Codex made edits, say so explicitly and list the touched files when the helper provides them.
-- For `codex:codex-rescue`, do not turn a failed or incomplete Codex run into a Claude-side implementation attempt. Report the failure and stop.
-- For `codex:codex-rescue`, if Codex was never successfully invoked, do not generate a substitute answer at all.
-- CRITICAL: After presenting review findings, STOP. Do not make any code changes. Do not fix any issues. You MUST explicitly ask the user which issues, if any, they want fixed before touching a single file. Auto-applying fixes from a review is strictly forbidden, even if the fix is obvious.
-- If the helper reports malformed output or a failed Codex run, include the most actionable stderr lines and stop there instead of guessing.
-- If the helper reports that setup or authentication is required, direct the user to `/codex:setup` and do not improvise alternate auth flows.
+When a Codex command finishes:
+- Present the adapter's stdout. Keep its structure: verdict, summary, findings, next steps, and the thread and continue lines of a task.
+- Keep file paths, line numbers, and the verdict exactly as reported.
+- For review output, keep the findings ordered by severity as printed. If there are no findings, say so.
+- Preserve evidence boundaries. If Codex marked something as an inference, an uncertainty, or an open question, keep that distinction.
+- If Codex made edits, say so and list the touched files when the output names them.
+- If the command failed, show the first line of stderr and stop. Do not guess at the cause and do not retry on your own.
+- If the exit code was 3 or the output says setup or login is needed, point the user to `/codex:setup`.
+- For `/codex:rescue`, do not turn a failed or incomplete Codex run into your own implementation. Report it and let the user decide.
+- After presenting review findings, stop. Do not change any file until the user says which findings, if any, to fix. This holds even when a fix looks obvious.

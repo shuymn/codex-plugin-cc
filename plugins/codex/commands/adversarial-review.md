@@ -1,66 +1,30 @@
 ---
-description: Run a Codex review that challenges the implementation approach and design choices
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--effort <effort>] [focus ...]'
+description: Run a read-only Codex review that challenges the change, its design choices, and its assumptions
+argument-hint: "[--wait] [--base <ref>] [--cwd <dir>] [--model <model>] [--effort <effort>] [focus ...]"
 disable-model-invocation: true
-allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
+allowed-tools: Bash(node:*)
 ---
 
-Run an adversarial Codex review through the shared plugin runtime.
-Position it as a challenge review that questions the chosen implementation, design choices, tradeoffs, and assumptions.
-It is not just a stricter pass over implementation defects.
+Run an adversarial Codex review through the plugin adapter. It questions the chosen approach, the design choices, the tradeoffs, and the assumptions, not only implementation defects. Text after the leading options is the focus of the review.
 
-Raw slash-command arguments:
-`$ARGUMENTS`
+This command is review-only. Do not fix issues, apply patches, or say that you are about to change files.
 
-Core constraint:
-- This command is review-only.
-- Do not fix issues, apply patches, or suggest that you are about to make changes.
-- Your only job is to run the review and return Codex's output verbatim to the user.
-- Keep the framing focused on whether the current approach is the right one, what assumptions it depends on, and where the design could fail under real-world conditions.
+Run the adapter exactly once with this Bash command:
 
-Execution mode rules:
-- If the raw arguments include `--wait`, do not ask. Run in the foreground.
-- If the raw arguments include `--background`, do not ask. Run in a Claude background task.
-- Otherwise, estimate the review size before asking:
-  - For working-tree review, start with `git status --short --untracked-files=all`.
-  - For working-tree review, also inspect both `git diff --shortstat --cached` and `git diff --shortstat`.
-  - For base-branch review, use `git diff --shortstat <base>...HEAD`.
-  - Treat untracked files or directories as reviewable work for auto or working-tree review even when `git diff --shortstat` is empty.
-  - Only conclude there is nothing to review when the relevant scope is actually empty.
-  - Recommend waiting only when the scoped review is clearly tiny, roughly 1-2 files total and no sign of a broader directory-sized change.
-  - In every other case, including unclear size, recommend background.
-  - When in doubt, run the review instead of declaring that there is nothing to review.
-- Then use `AskUserQuestion` exactly once with two options, putting the recommended option first and suffixing its label with `(Recommended)`:
-  - `Wait for results`
-  - `Run in background`
-
-Argument handling:
-- Preserve the user's arguments exactly.
-- Do not strip `--wait` or `--background` yourself.
-- Do not weaken the adversarial framing or rewrite the user's focus text.
-- The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
-- `/codex:adversarial-review` uses the same review target selection as `/codex:review`.
-- It supports working-tree review, branch review, and `--base <ref>`.
-- It does not support `--scope staged` or `--scope unstaged`.
-- Unlike `/codex:review`, it can still take extra focus text after the flags.
-
-Foreground flow:
-- Run:
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/codex.ts" adversarial-review <<'CODEX_PLUGIN_ARGS_<NONCE>'
+$ARGUMENTS
+CODEX_PLUGIN_ARGS_<NONCE>
 ```
-- Return the command stdout verbatim, exactly as-is.
-- Do not paraphrase, summarize, or add commentary before or after it.
-- Do not fix any issues mentioned in the review output.
 
-Background flow:
-- Launch the review with `Bash` in the background:
-```typescript
-Bash({
-  command: `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review "$ARGUMENTS"`,
-  description: "Codex adversarial review",
-  run_in_background: true
-})
-```
-- Do not call `BashOutput` or wait for completion in this turn.
-- After launching the command, tell the user: "Codex adversarial review started in the background. Check `/codex:status` for progress."
+Command rules:
+- Replace both `<NONCE>` markers with the same fresh random string of at least 16 letters and digits that does not appear in the arguments.
+- Keep the arguments between the two marker lines exactly as given. Do not quote, escape, reorder, rewrite, or drop anything, including the focus text.
+
+Execution mode:
+- If `--wait` is among the leading options, run the command in the foreground.
+- Otherwise run it with `run_in_background: true`, tell the user "Codex adversarial review started in the background. You will be notified when it finishes.", and end your turn. Do not poll or wait for it.
+
+When the command finishes:
+- On exit code 0, present stdout as the `codex-result-handling` skill describes.
+- Otherwise show the first line of stderr and stop. If the exit code is 3, tell the user to run `/codex:setup`. Do not retry, and do not review the code yourself instead.
