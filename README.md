@@ -135,7 +135,7 @@ When the review gate is on, a `Stop` hook asks Codex for a read-only review of w
 - Codex answers with a structured verdict. It blocks only for problems tied to a file and line, and the hook passes those findings back to Claude. After three blocks with findings in a row, if the fourth review also blocks, the hook lets Claude stop and shows those findings to you; run `/codex:review` yourself then.
 - If the review fails, times out, or returns an invalid verdict, the hook blocks the stop without counting it toward that limit. Stop again to retry, or turn the gate off with `/codex:setup --disable-review-gate`.
 - If the working tree changes while Codex is reviewing it, for example because a background task is still writing, the hook blocks the stop and asks Claude to stop again once the writes are done.
-- Outside a Git repository, in a repository with submodules, and in a repository where some files use a Git filter such as Git LFS, there is no snapshot. Codex then reviews all uncommitted changes (or, outside Git, what Claude's final message describes) on every stop.
+- Outside a Git repository, in a repository with submodules, and in a repository where some files use a Git filter such as Git LFS, there is no snapshot. Codex then reviews the working tree against the baseline described above, plus untracked files, on every stop, and the hook tells you why; outside Git, Codex reviews what Claude's final message describes. Such a review is never recorded as approved.
 - If Codex is not installed, the hook skips the review, shows a note, and lets Claude stop.
 
 The gate does not review the contents of `.git` (such as its config and hooks) or files ignored by `.gitignore`.
