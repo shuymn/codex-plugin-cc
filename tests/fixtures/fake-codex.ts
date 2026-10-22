@@ -15,7 +15,6 @@ const argv = process.argv.slice(2);
 
 type ExecCall = {
   sandbox: string | null;
-  configs: string[];
   subcommand: "review" | "resume" | null;
   outputFile: string | null;
   outputSchema: string | null;
@@ -47,7 +46,6 @@ const TOP_LEVEL_VALUE_OPTIONS = new Set(["-s"]);
 function parseExec(args: readonly string[]): ExecCall {
   const call: ExecCall = {
     sandbox: null,
-    configs: [],
     subcommand: null,
     outputFile: null,
     outputSchema: null,
@@ -89,8 +87,8 @@ function parseExec(args: readonly string[]): ExecCall {
     }
     if (GLOBAL_VALUE_OPTIONS.has(arg)) {
       const value = takeValue();
+      // -c may repeat; its value is only skipped here.
       if (arg === "-c") {
-        call.configs.push(value);
         continue;
       }
       if (seen.has(arg)) {

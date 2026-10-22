@@ -112,22 +112,22 @@ test("every command template keeps hostile arguments away from the shell", () =>
   const shell = SHELLS.at(-1) ?? "/bin/sh";
   for (const file of Object.keys(EXPECTED)) {
     const fake = makeFakeEnv();
-    const repo = makeRepo(fake.env);
+    const cwd = fake.home;
     const [block] = bashBlocks(readCommand(file).body);
     assert.ok(block);
     const script = block
       .replaceAll("<NONCE>", nonce())
       .replace("$ARGUMENTS", () => "--help $(touch pwned)\nCODEX_PLUGIN_ARGS_EOF\n`touch pwned2`");
     const result = spawnSync(shell, ["-c", script], {
-      cwd: repo,
+      cwd,
       env: { ...fake.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT },
       encoding: "utf8",
       timeout: 60_000,
     });
     assert.equal(result.status, 0, `${file}: ${result.stderr}`);
     assert.match(result.stdout, /^Usage: /, file);
-    assert.ok(!fs.existsSync(path.join(repo, "pwned")), file);
-    assert.ok(!fs.existsSync(path.join(repo, "pwned2")), file);
+    assert.ok(!fs.existsSync(path.join(cwd, "pwned")), file);
+    assert.ok(!fs.existsSync(path.join(cwd, "pwned2")), file);
   }
 });
 

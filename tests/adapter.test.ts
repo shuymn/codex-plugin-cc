@@ -89,8 +89,8 @@ test("task argv: workspace-write by default, read-only on request, approvals and
 // EARS 3
 test("an unknown leading option exits 2 without starting codex", () => {
   for (const sub of ["task", "review", "adversarial-review", "setup", "transfer"]) {
-    const { fake, repo } = setup();
-    const result = runAdapter(sub, "--write do it", { env: fake.env, cwd: repo });
+    const fake = makeFakeEnv();
+    const result = runAdapter(sub, "--write do it", { env: fake.env, cwd: fake.home });
     assert.equal(result.status, 2, `${sub}: ${result.stderr}`);
     assert.match(firstLine(result.stderr), /--write/);
     assert.equal(fake.readLog().length, 0);
@@ -101,8 +101,8 @@ test("an unknown leading option exits 2 without starting codex", () => {
 test("--help and -h print usage, exit 0, and never start codex", () => {
   for (const sub of ["task", "review", "adversarial-review", "setup", "transfer"]) {
     for (const flag of ["--help", "-h"]) {
-      const { fake, repo } = setup();
-      const result = runAdapter(sub, flag, { env: fake.env, cwd: repo });
+      const fake = makeFakeEnv();
+      const result = runAdapter(sub, flag, { env: fake.env, cwd: fake.home });
       assert.equal(result.status, 0, `${sub} ${flag}: ${result.stderr}`);
       assert.match(result.stdout, /^Usage: /);
       assert.equal(fake.readLog().length, 0);
@@ -111,8 +111,8 @@ test("--help and -h print usage, exit 0, and never start codex", () => {
 });
 
 test("a missing or unknown subcommand is a usage error", () => {
-  const { fake, repo } = setup();
-  assert.equal(runAdapter("status", "", { env: fake.env, cwd: repo }).status, 2);
+  const fake = makeFakeEnv();
+  assert.equal(runAdapter("status", "", { env: fake.env, cwd: fake.home }).status, 2);
   assert.equal(fake.readLog().length, 0);
 });
 
@@ -449,12 +449,8 @@ test("SIGTERM is forwarded to codex as SIGINT and the adapter exits 143 after co
   const adapterTmp = makeTempDir();
   const env = { ...fake.env, FAKE_CODEX_READY_FILE: ready, TMPDIR: adapterTmp };
   const child = spawnAdapter("task", "go", { env, cwd: repo });
-  const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
-  const deadline = Date.now() + 20_000;
-  while (!fs.existsSync(ready)) {
-    assert.ok(Date.now() < deadline, "fake codex never became ready");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  const exited = exitCodeOf(child);
+  await waitForFile(ready);
   child.kill("SIGTERM");
   assert.equal(await exited, 143);
   const signals = fake.readLog().filter((call) => call.signal);
@@ -577,8 +573,8 @@ test("setup tells the user to log in or install codex", () => {
 });
 
 test("transfer --help says --cwd does not set the imported thread's directory", () => {
-  const { fake, repo } = setup();
-  const result = runAdapter("transfer", "--help", { env: fake.env, cwd: repo });
+  const fake = makeFakeEnv();
+  const result = runAdapter("transfer", "--help", { env: fake.env, cwd: fake.home });
   assert.match(result.stdout, /working directory comes from the transcript/);
 });
 
