@@ -2,12 +2,27 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-type GitResult = { status: number | null; stdout: string };
+// status is null when git could not run, was killed, or hit the timeout.
+export type GitResult = { status: number | null; stdout: string; stderr: string };
+
+export type GitOptions = { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number };
+
+// Large enough for `git ls-files -z` of a big repository.
+const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
 
 // Repository-derived values only ever go to git as argv, never through a shell.
-function git(cwd: string, args: readonly string[]): GitResult {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false, stdio: ["ignore", "pipe", "pipe"] });
-  return { status: result.error ? null : result.status, stdout: result.stdout ?? "" };
+export function git(cwd: string, args: readonly string[], options: GitOptions = {}): GitResult {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    shell: false,
+    stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    maxBuffer: MAX_GIT_OUTPUT,
+    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.input === undefined ? {} : { input: options.input }),
+    ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+  });
+  return { status: result.error ? null : result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
 export function gitToplevel(cwd: string): string | null {
