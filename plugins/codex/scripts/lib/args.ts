@@ -145,10 +145,9 @@ export function stripTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value.slice(0, -1) : value;
 }
 
-// The command templates pass the user's arguments only through a quoted heredoc
-// on stdin, so the shell never expands them. The stream is read asynchronously
-// because a synchronous read of a non-blocking pipe can fail with EAGAIN.
-export async function readArgumentInput(): Promise<string> {
+// Reads all of stdin. Asynchronous on purpose: a synchronous read of a
+// non-blocking pipe can fail with EAGAIN.
+export async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) {
     return "";
   }
@@ -156,5 +155,11 @@ export async function readArgumentInput(): Promise<string> {
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
-  return stripTrailingNewline(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+// The command templates pass the user's arguments only through a quoted heredoc
+// on stdin, so the shell never expands them.
+export async function readArgumentInput(): Promise<string> {
+  return stripTrailingNewline(await readStdin());
 }
