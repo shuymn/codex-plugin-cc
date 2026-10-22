@@ -34,7 +34,7 @@ import { readGateState, type WorkspaceState, workspaceKey, writeGateState } from
 // the tree again and answer.
 const GATE_TIMEOUT_MS = 13 * 60 * 1000;
 // Consecutive blocks with findings before the gate lets Claude stop anyway.
-export const MAX_BLOCKS = 3;
+const MAX_BLOCKS = 3;
 
 const FAILURE_HINT =
   "Stop again to retry, run /codex:review manually, or turn the gate off with /codex:setup --disable-review-gate.";
@@ -54,10 +54,7 @@ export type BaseChoice = { tree: string; note: BaseNote | null };
 // session's starting tree, else HEAD, else the empty tree. A recorded tree
 // that is no longer in the object database (pruned by gc) is skipped. Every
 // base short of a recorded one comes with a note for Codex and the user.
-export function chooseBase(
-  workspace: WorkspaceState,
-  repo: { exists: (tree: string) => boolean; head: () => string | null; empty: () => string | null },
-): BaseChoice | null {
+function chooseBase(workspace: WorkspaceState, root: string): BaseChoice | null {
   let lost: BaseNote | null = null;
   for (const [tree, note] of [
     [workspace.approvedTree, "approved-lost"],
@@ -66,12 +63,12 @@ export function chooseBase(
     if (tree === undefined) {
       continue;
     }
-    if (repo.exists(tree)) {
+    if (treeExists(root, tree)) {
       return { tree, note: lost };
     }
     lost ??= note;
   }
-  const fallback = repo.head() ?? repo.empty();
+  const fallback = headTree(root) ?? emptyTree(root);
   return fallback === null ? null : { tree: fallback, note: lost ?? "unrecorded" };
 }
 
@@ -87,10 +84,6 @@ export type ReviewPlan =
   | {
       kind: "review";
       scope: ReviewScope;
-      // The snapshot under review, checked again after Codex answers.
-      current: string | null;
-      // Whether an allow may record `current` as approved.
-      approvable: boolean;
       // Submodules whose contents the review must check by hand.
       submodules: string[];
       baseNote: BaseNote | null;
@@ -102,8 +95,6 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
     return {
       kind: "review",
       scope: { kind: "outside-git" },
-      current: null,
-      approvable: false,
       submodules: [],
       baseNote: null,
     };
@@ -116,8 +107,6 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
         base: base?.tree ?? null,
         reason: snapshot.kind === "failed" ? snapshot.reason : "no base tree could be found",
       },
-      current: null,
-      approvable: false,
       submodules: snapshot.kind === "failed" ? snapshot.submodules : [],
       baseNote,
     };
@@ -129,18 +118,22 @@ export function planReview(snapshot: Snapshot, approvedTree: string | undefined,
   return {
     kind: "review",
     scope: { kind: "diff", base: base.tree, current: tree },
-    current: tree,
-    approvable: true,
     submodules: [],
     baseNote,
   };
+}
+
+// The snapshot under review, checked again after Codex answers. Only a
+// reviewed snapshot can be recorded as approved.
+function reviewedTree(plan: Extract<ReviewPlan, { kind: "review" }>): string | null {
+  return plan.scope.kind === "diff" ? plan.scope.current : null;
 }
 
 // ----------------------------------------------------------------- prompt
 
 // Keeps text from the repository or from Claude from closing a data block
 // of the prompt: no "<" survives.
-export function encodeData(message: string): string {
+function encodeData(message: string): string {
   return message.replaceAll("<", "&lt;");
 }
 
@@ -202,7 +195,7 @@ function scopeText(plan: Extract<ReviewPlan, { kind: "review" }>): string {
   return lines.join("\n");
 }
 
-export function buildPrompt(plan: Extract<ReviewPlan, { kind: "review" }>, finalMessage: string): string {
+function buildPrompt(plan: Extract<ReviewPlan, { kind: "review" }>, finalMessage: string): string {
   const template = fs.readFileSync(path.join(PLUGIN_ROOT, "prompts", "stop-review-gate.md"), "utf8");
   return interpolate(template, {
     REVIEW_SCOPE: scopeText(plan),
@@ -282,9 +275,10 @@ export function decide(
   }
   // A verdict on a tree that is no longer there decides nothing, not even at
   // the block limit, and does not count toward it.
-  if (plan.current !== null) {
+  const current = reviewedTree(plan);
+  if (current !== null) {
     const after = outcome.after;
-    if (after?.kind !== "tree" || after.tree !== plan.current) {
+    if (after?.kind !== "tree" || after.tree !== current) {
       return { response: withNote({ block: CHANGED_DURING_REVIEW }), blocks: null, approve: null };
     }
   }
@@ -311,7 +305,7 @@ export function decide(
       approve: null,
     };
   }
-  return { response: withNote({}), blocks: 0, approve: plan.approvable ? plan.current : null };
+  return { response: withNote({}), blocks: 0, approve: current };
 }
 
 // The hook's stdout: nothing to let Claude stop silently, otherwise one JSON
@@ -425,14 +419,7 @@ async function main(): Promise<number> {
   };
 
   const snapshot = takeSnapshot(root);
-  const base =
-    snapshot.kind === "not-git"
-      ? null
-      : chooseBase(workspace, {
-          exists: (tree) => treeExists(root, tree),
-          head: () => headTree(root),
-          empty: () => emptyTree(root),
-        });
+  const base = snapshot.kind === "not-git" ? null : chooseBase(workspace, root);
   const plan = planReview(snapshot, workspace.approvedTree, base);
   if (plan.kind === "unchanged") {
     if (state !== null && state.blocks !== 0) {
@@ -457,7 +444,7 @@ async function main(): Promise<number> {
     return run.code;
   }
   let outcome = run.outcome;
-  if (outcome.kind === "answered" && plan.current !== null) {
+  if (outcome.kind === "answered" && reviewedTree(plan) !== null) {
     outcome = { ...outcome, after: takeSnapshot(root) };
   }
   const decision = decide(plan, outcome, state === null ? null : state.blocks);

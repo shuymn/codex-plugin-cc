@@ -134,7 +134,6 @@ test("files with a Git filter make the snapshot fail without running the filter"
     const repo = makeRepo(fake.env);
     const marker = path.join(makeTempDir(), "filter-ran");
     git(repo, ["config", "filter.probe.clean", `touch "${marker}"; cat`], fake.env);
-    git(repo, ["config", "filter.probe.smudge", "cat"], fake.env);
     write(repo, ".gitattributes", "*.dat filter=probe\n");
     if (tracked) {
       write(repo, "a.dat", "data\n");

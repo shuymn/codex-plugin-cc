@@ -28,7 +28,7 @@ export type SnapshotOptions = {
   beforeAdd?: () => void;
 };
 
-export const SNAPSHOT_TIMEOUT_MS = 30_000;
+const SNAPSHOT_TIMEOUT_MS = 30_000;
 
 const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
@@ -112,26 +112,26 @@ function submodulePaths(run: Run, env?: Record<string, string>): string[] {
   return [...paths];
 }
 
-// Paths `git add -A` would read whose `filter` attribute is set. Building the
-// tree would run that filter (Git LFS, for example) outside Codex's sandbox.
-function filteredPaths(run: Run): string[] {
+// The first path `git add -A` would read whose `filter` attribute is set, or
+// null. Building the tree would run that filter (Git LFS, for example) outside
+// Codex's sandbox.
+function firstFilteredPath(run: Run): string | null {
   const files = check(run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]), "ls-files");
   if (!files) {
-    return [];
+    return null;
   }
   const fields = check(run(["check-attr", "--stdin", "-z", "filter"], { input: files }), "check-attr").split("\0");
-  const found: string[] = [];
   // -z output: <path> NUL <attribute> NUL <value> NUL, repeated.
   for (let index = 0; index + 2 < fields.length; index += 3) {
     if (fields[index + 2] !== "unspecified") {
-      found.push(fields[index] ?? "");
+      return fields[index] ?? "";
     }
   }
-  return found;
+  return null;
 }
 
 // `-c` options that turn off every configured filter driver, so a filter
-// attribute that appears after filteredPaths ran still cannot start one.
+// attribute that appears after firstFilteredPath ran still cannot start one.
 // Empty clean and process commands make Git store the file as is.
 function disabledFilterConfig(run: Run): string[] {
   const result = run(["config", "-z", "--name-only", "--get-regexp", "^filter\\."]);
@@ -194,9 +194,9 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     const run: Run = (args, runOptions) => plainRun([...noFilters, ...args], runOptions);
 
     rejectSubmodules(submodulePaths(run));
-    const filtered = filteredPaths(run);
-    if (filtered.length > 0) {
-      throw new SnapshotFailure(`files use a Git filter (${filtered[0]}), which the snapshot will not run`);
+    const filtered = firstFilteredPath(run);
+    if (filtered !== null) {
+      throw new SnapshotFailure(`files use a Git filter (${filtered}), which the snapshot will not run`);
     }
 
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-snapshot-"));
