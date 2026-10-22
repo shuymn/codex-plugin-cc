@@ -18,6 +18,7 @@ import {
   type CodexRunResult,
   CodexNotFoundError,
   cleanCodexStderr,
+  ensureReaped,
   failureReason,
   type ModelOptions,
   modelArgs,
@@ -36,7 +37,7 @@ import {
 } from "./lib/git.ts";
 import { parseReviewOutput, renderReviewResult } from "./lib/review-render.ts";
 import { recordThread, resolveResumeThread } from "./lib/thread-store.ts";
-import { InterruptedError } from "./lib/process-group.ts";
+import { InterruptedError, ReapError } from "./lib/process-group.ts";
 import { importClaudeSession, resolveClaudeSessionPath, TransferError } from "./lib/transfer.ts";
 
 const EXIT_CODEX_FAILED = 1;
@@ -202,6 +203,7 @@ async function runTask(options: Options, text: string): Promise<number> {
         }
       },
     });
+    ensureReaped(result);
     if (result.receivedSignal) {
       return signalExitCode(result.receivedSignal);
     }
@@ -297,6 +299,7 @@ async function runReview(options: Options): Promise<number> {
       outputFile,
     ];
     const result = await runCodex(args, { cwd });
+    ensureReaped(result);
     if (result.receivedSignal) {
       return signalExitCode(result.receivedSignal);
     }
@@ -344,6 +347,7 @@ async function runAdversarialReview(options: Options, text: string): Promise<num
       "-",
     ];
     const result = await runCodex(args, { cwd, stdin: prompt });
+    ensureReaped(result);
     if (result.receivedSignal) {
       return signalExitCode(result.receivedSignal);
     }
@@ -539,6 +543,8 @@ try {
     process.exitCode = fail(EXIT_CODEX_NOT_FOUND, `${error.message} Run /codex:setup.`);
   } else if (error instanceof CodexFailure) {
     process.exitCode = fail(EXIT_CODEX_FAILED, error.message, error.detail);
+  } else if (error instanceof ReapError) {
+    process.exitCode = fail(EXIT_CODEX_FAILED, error.message);
   } else if (error instanceof InterruptedError) {
     process.exitCode = signalExitCode(error.signal);
   } else if (error instanceof TransferError) {

@@ -11,6 +11,9 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
 export const INTERRUPT_GRACE_MS = 10_000;
 export const TERMINATE_GRACE_MS = 5_000;
+// How long after SIGKILL the group still gets to disappear before the
+// supervisor gives up and reports that it could not reap it.
+export const REAP_GRACE_MS = 2_000;
 // Bounds the wait for stdout and stderr to close after the group is gone, in
 // case a process that left the group still holds them open.
 const STREAM_CLOSE_GRACE_MS = 2_000;
@@ -32,7 +35,21 @@ export class InterruptedError extends Error {
   }
 }
 
-export type StopTiming = { interruptGraceMs?: number; terminateGraceMs?: number };
+// Codex processes may still be running: the group could not be signaled, or
+// did not disappear in time after SIGKILL.
+export class ReapError extends Error {
+  override name = "ReapError";
+}
+
+export type KillFunction = (pid: number, signal: NodeJS.Signals | 0) => void;
+
+export type StopTiming = {
+  interruptGraceMs?: number;
+  terminateGraceMs?: number;
+  reapGraceMs?: number;
+  // For tests: replaces process.kill.
+  kill?: KillFunction;
+};
 
 export type GroupOptions = StopTiming & {
   cwd: string;
@@ -48,6 +65,8 @@ export type GroupExit = {
   // The signal the adapter itself received while the group ran.
   receivedSignal: NodeJS.Signals | null;
   timedOut: boolean;
+  // Set when the group could not be reaped; the run is then not a success.
+  reapError: string | null;
 };
 
 export type SupervisedGroup = {
@@ -56,8 +75,26 @@ export type SupervisedGroup = {
   exited: Promise<GroupExit>;
 };
 
-function isNotFound(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+// Copies the timing fields that are set, for passing options along.
+export function pickStopTiming(options: StopTiming): StopTiming {
+  const timing: StopTiming = {};
+  if (options.interruptGraceMs !== undefined) {
+    timing.interruptGraceMs = options.interruptGraceMs;
+  }
+  if (options.terminateGraceMs !== undefined) {
+    timing.terminateGraceMs = options.terminateGraceMs;
+  }
+  if (options.reapGraceMs !== undefined) {
+    timing.reapGraceMs = options.reapGraceMs;
+  }
+  if (options.kill !== undefined) {
+    timing.kill = options.kill;
+  }
+  return timing;
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof Error && "code" in error ? String(error.code) : "unknown";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -71,33 +108,33 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  const kill: KillFunction = options.kill ?? ((pid, signal) => process.kill(pid, signal));
   const interruptGraceMs = options.interruptGraceMs ?? INTERRUPT_GRACE_MS;
   const terminateGraceMs = options.terminateGraceMs ?? TERMINATE_GRACE_MS;
+  const reapGraceMs = options.reapGraceMs ?? REAP_GRACE_MS;
   const timers: NodeJS.Timeout[] = [];
   let receivedSignal: NodeJS.Signals | null = null;
   let timedOut = false;
   let stopping = false;
-  let killDeadline = Number.POSITIVE_INFINITY;
+  let reapError: string | null = null;
+  let giveUp: (() => void) | null = null;
 
-  const signalGroup = (signal: NodeJS.Signals): void => {
-    if (child.pid === undefined) {
-      return;
-    }
-    try {
-      process.kill(-child.pid, signal);
-    } catch {
-      // The group is already gone.
-    }
-  };
-  const groupAlive = (): boolean => {
+  // ESRCH means the group is already gone; any other failure (EPERM, ...)
+  // means it may still be running and is kept as a reap failure.
+  const signalGroup = (signal: NodeJS.Signals | 0): boolean => {
     if (child.pid === undefined) {
       return false;
     }
     try {
-      process.kill(-child.pid, 0);
+      kill(-child.pid, signal);
       return true;
     } catch (error) {
-      return error instanceof Error && "code" in error && error.code === "EPERM";
+      const code = errorCode(error);
+      if (code === "ESRCH") {
+        return false;
+      }
+      reapError ??= `could not signal the Codex process group ${child.pid} (${code}); Codex processes may still be running.`;
+      return true;
     }
   };
 
@@ -112,10 +149,12 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
       // Stopping must go on even if the graceful step fails.
     }
     signalGroup("SIGINT");
-    killDeadline = Date.now() + interruptGraceMs + terminateGraceMs;
     timers.push(
       setTimeout(() => signalGroup("SIGTERM"), interruptGraceMs),
       setTimeout(() => signalGroup("SIGKILL"), interruptGraceMs + terminateGraceMs),
+      // The bound does not depend on the child's exit event: once SIGKILL has
+      // had reapGraceMs to work, the supervisor stops waiting.
+      setTimeout(() => giveUp?.(), interruptGraceMs + terminateGraceMs + reapGraceMs),
     );
   };
 
@@ -143,42 +182,71 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   };
 
   let streamsClosed = false;
-  const streamsClosedPromise = new Promise<void>((resolve) => {
-    child.on("close", () => {
-      streamsClosed = true;
-      resolve();
-    });
+  child.on("close", () => {
+    streamsClosed = true;
   });
 
   const exited = new Promise<GroupExit>((resolve, reject) => {
     let settled = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      if (!streamsClosed) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+      if (reapError !== null) {
+        // Do not let a process we failed to reap keep the adapter alive.
+        child.stdin.destroy();
+        child.unref();
+      }
+      resolve({ exitCode, exitSignal, receivedSignal, timedOut, reapError });
+    };
+    giveUp = () => {
+      reapError ??= `the Codex process group ${child.pid ?? "?"} did not exit after SIGKILL; Codex processes may still be running.`;
+      finish();
+    };
+
     child.on("error", (error) => {
       if (settled || child.pid !== undefined) {
         return;
       }
       settled = true;
       cleanup();
-      reject(isNotFound(error) ? new CodexNotFoundError("codex was not found on PATH.") : error);
+      reject(
+        error instanceof Error && errorCode(error) === "ENOENT"
+          ? new CodexNotFoundError("codex was not found on PATH.")
+          : error,
+      );
     });
-    child.on("exit", (exitCode, exitSignal) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+    child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
       void (async () => {
         // Anything left in the group (the launcher's child, or processes
-        // Codex started) is stopped too, and waited for within the ladder.
-        while (groupAlive() && Date.now() < killDeadline + 1_000) {
+        // Codex started) is stopped too; giveUp bounds this wait.
+        for (;;) {
+          if (settled || !signalGroup(0)) {
+            break;
+          }
           stop();
           await sleep(POLL_MS);
         }
-        if (!streamsClosed) {
-          await Promise.race([streamsClosedPromise, sleep(STREAM_CLOSE_GRACE_MS)]);
-          child.stdout.destroy();
-          child.stderr.destroy();
+        if (!settled && !streamsClosed) {
+          let streamTimer: NodeJS.Timeout | undefined;
+          await new Promise<void>((resolveClose) => {
+            streamTimer = setTimeout(resolveClose, STREAM_CLOSE_GRACE_MS);
+            child.once("close", () => resolveClose());
+          });
+          clearTimeout(streamTimer);
         }
-        cleanup();
-        resolve({ exitCode, exitSignal, receivedSignal, timedOut });
+        finish();
       })();
     });
   });

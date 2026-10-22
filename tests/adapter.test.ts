@@ -581,3 +581,15 @@ test("transfer --help says --cwd does not set the imported thread's directory", 
   const result = runAdapter("transfer", "--help", { env: fake.env, cwd: repo });
   assert.match(result.stdout, /working directory comes from the transcript/);
 });
+
+test("the adapter exits as soon as a quick codex has finished", async () => {
+  const { fake, repo } = setup();
+  const doneFile = path.join(makeTempDir(), "done");
+  const child = spawnAdapter("task", "go", { env: { ...fake.env, FAKE_CODEX_DONE_FILE: doneFile }, cwd: repo });
+  const code = await exitCodeOf(child);
+  const exitedAt = Date.now();
+  assert.equal(code, 0);
+  const done = Number(fs.readFileSync(doneFile, "utf8"));
+  // Nothing may hold the adapter open, such as the 2 second stream timer.
+  assert.ok(exitedAt - done < 1_500, `the adapter exited ${exitedAt - done} ms after codex`);
+});

@@ -2,7 +2,14 @@ import { spawnSync } from "node:child_process";
 import readline from "node:readline";
 
 import { isRecord, type JsonObject } from "./json.ts";
-import { CodexNotFoundError, type GroupExit, spawnCodexGroup, type StopTiming } from "./process-group.ts";
+import {
+  CodexNotFoundError,
+  type GroupExit,
+  pickStopTiming,
+  ReapError,
+  spawnCodexGroup,
+  type StopTiming,
+} from "./process-group.ts";
 
 export { CodexNotFoundError } from "./process-group.ts";
 
@@ -88,8 +95,7 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
   const group = spawnCodexGroup(args, {
     cwd: options.cwd,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    ...(options.interruptGraceMs === undefined ? {} : { interruptGraceMs: options.interruptGraceMs }),
-    ...(options.terminateGraceMs === undefined ? {} : { terminateGraceMs: options.terminateGraceMs }),
+    ...pickStopTiming(options),
   });
   const { child } = group;
 
@@ -162,6 +168,13 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
     };
   } finally {
     lines.close();
+  }
+}
+
+// A run whose process group could not be reaped is never a success.
+export function ensureReaped(result: Pick<GroupExit, "reapError">): void {
+  if (result.reapError !== null) {
+    throw new ReapError(result.reapError);
   }
 }
 

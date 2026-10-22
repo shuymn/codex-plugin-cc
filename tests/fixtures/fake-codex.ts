@@ -208,12 +208,11 @@ async function runExec(call: ExecCall): Promise<void> {
   log({ stdin });
 
   const threadId = call.resumeId ?? randomUUID();
-  emit({ type: "thread.started", thread_id: threadId });
-  emit({ type: "turn.started" });
-
   if (scenario === "slow" || scenario === "ignore-sigint") {
     // `slow` ends on the first signal; `ignore-sigint` behaves like a Codex
-    // binary that keeps running after SIGINT and only stops on SIGTERM.
+    // binary that keeps running after SIGINT and only stops on SIGTERM. The
+    // handlers and the ready file come before thread.started, because the
+    // adapter may stop the run as soon as it sees that event.
     const onSignal = (signal: NodeJS.Signals): void => {
       if (scenario === "ignore-sigint" && signal === "SIGINT") {
         log({ signal, ignored: true });
@@ -227,9 +226,13 @@ async function runExec(call: ExecCall): Promise<void> {
     if (process.env.FAKE_CODEX_READY_FILE) {
       fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
     }
+    emit({ type: "thread.started", thread_id: threadId });
+    emit({ type: "turn.started" });
     setInterval(() => {}, 1000);
     return;
   }
+  emit({ type: "thread.started", thread_id: threadId });
+  emit({ type: "turn.started" });
   if (scenario === "exit-nonzero") {
     process.stderr.write("WARNING: proceeding, even though we could not update PATH: noise\nlog line\nERROR: boom\n");
     process.exit(1);
@@ -256,6 +259,9 @@ async function runExec(call: ExecCall): Promise<void> {
     }
   }
   emit({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+  if (process.env.FAKE_CODEX_DONE_FILE) {
+    fs.writeFileSync(process.env.FAKE_CODEX_DONE_FILE, String(Date.now()));
+  }
 }
 
 function send(message: Record<string, unknown>): void {
@@ -303,9 +309,6 @@ function writeLedger(sourcePath: string): void {
 
 function runAppServer(): void {
   log({ stdin: null });
-  if (process.env.FAKE_CODEX_READY_FILE) {
-    fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
-  }
   const stubborn = scenario === "transfer-stubborn";
   // Stays alive after stdin closes and on SIGINT and SIGTERM, so only SIGKILL ends it.
   if (stubborn) {
@@ -320,6 +323,10 @@ function runAppServer(): void {
         process.exit(signal === "SIGINT" ? 130 : 143);
       });
     }
+  }
+  // Ready only once the signal handlers are in place.
+  if (process.env.FAKE_CODEX_READY_FILE) {
+    fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
   }
   const lines = readline.createInterface({ input: process.stdin });
   lines.on("line", (line) => {
@@ -390,6 +397,11 @@ function runLauncher(): void {
 }
 
 async function main(): Promise<void> {
+  // Simulates a slow start, before anything else happens.
+  const startupDelayMs = Number(process.env.FAKE_CODEX_STARTUP_DELAY_MS ?? "0");
+  if (startupDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
+  }
   if (argv.length === 1 && argv[0] === "--version") {
     log({});
     process.stdout.write("codex-cli 0.0.0-fake\n");

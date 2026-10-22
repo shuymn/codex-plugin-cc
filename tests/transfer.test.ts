@@ -10,6 +10,7 @@ import {
   makeFakeEnv,
   makeTempDir,
   runAdapter,
+  sleep,
   spawnAdapter,
   waitForFile,
   waitUntilGone,
@@ -90,10 +91,14 @@ test("SIGTERM during transfer stops the app-server and exits 143", { timeout: 60
   assert.ok(await waitUntilGone(serverPid), "the app-server is still running");
 });
 
-// In-process runs of the client, with short deadlines.
-async function importInProcess(scenario: string, timing: { timeoutMs: number; graceMs: number }) {
+// In-process runs of the client. The deadline is an injected clock that
+// expires only once the stub is running and has received initialize, so how
+// fast the stub starts cannot change the outcome. The stop grace periods are
+// short; real process start-up gets the test's own time budget.
+async function importInProcess(scenario: string, options: { graceMs: number; startupDelayMs?: number }) {
   const { fake, transcript, cwd } = setup(scenario);
   const ready = path.join(makeTempDir(), "ready");
+  const initialized = (): boolean => fake.readLog().some((call) => call.rpc?.method === "initialize");
   const saved = { ...process.env };
   Object.assign(process.env, {
     PATH: fake.env.PATH,
@@ -101,44 +106,67 @@ async function importInProcess(scenario: string, timing: { timeoutMs: number; gr
     FAKE_CODEX_LOG: fake.env.FAKE_CODEX_LOG,
     FAKE_CODEX_SCENARIO: scenario,
     FAKE_CODEX_READY_FILE: ready,
+    FAKE_CODEX_STARTUP_DELAY_MS: String(options.startupDelayMs ?? 0),
   });
-  const started = Date.now();
   try {
     const error = await importClaudeSession(cwd, transcript, {
-      timeoutMs: timing.timeoutMs,
-      closeGraceMs: timing.graceMs,
-      interruptGraceMs: timing.graceMs,
-      terminateGraceMs: timing.graceMs,
+      closeGraceMs: options.graceMs,
+      interruptGraceMs: options.graceMs,
+      terminateGraceMs: options.graceMs,
+      deadline: (expire) => {
+        const state = { cancelled: false };
+        void (async () => {
+          for (;;) {
+            if (state.cancelled) {
+              return;
+            }
+            if (initialized()) {
+              expire();
+              return;
+            }
+            await sleep(20);
+          }
+        })();
+        return () => {
+          state.cancelled = true;
+        };
+      },
     }).then(
       () => null,
       (caught: unknown) => caught,
     );
-    return { error, elapsed: Date.now() - started, serverPid: Number(await waitForFile(ready)), fake };
+    return { error, serverPid: Number(await waitForFile(ready)), fake };
   } finally {
     process.env = saved;
   }
 }
 
-test("transfer gives up on an app-server that never answers and reaps it", async () => {
-  const { error, elapsed, serverPid, fake } = await importInProcess("transfer-hang", { timeoutMs: 500, graceMs: 200 });
+test("transfer gives up on an app-server that never answers and reaps it", { timeout: 60_000 }, async () => {
+  const { error, serverPid, fake } = await importInProcess("transfer-hang", { graceMs: 200 });
   assert.ok(error instanceof TransferError, String(error));
   assert.match(error.message, /timed out/);
-  assert.ok(elapsed < 5_000, `took ${elapsed} ms`);
   assert.ok(await waitUntilGone(serverPid));
   // Closing stdin was enough for a server that honors it.
   assert.ok(fake.readLog().some((call) => call.appServerClosed));
 });
 
-test("transfer kills an app-server that ignores stdin, SIGINT, and SIGTERM", async () => {
-  const { error, serverPid, fake } = await importInProcess("transfer-stubborn", { timeoutMs: 300, graceMs: 200 });
-  assert.ok(error instanceof TransferError, String(error));
-  assert.ok(await waitUntilGone(serverPid), "the app-server survived SIGKILL");
-  const ignored = fake
-    .readLog()
-    .filter((call) => call.ignored)
-    .map((call) => call.signal);
-  assert.deepEqual(ignored, ["SIGINT", "SIGTERM"]);
-});
+for (const startupDelayMs of [0, 1_500]) {
+  test(
+    `transfer kills an app-server that ignores stdin, SIGINT, and SIGTERM (start-up delay ${startupDelayMs} ms)`,
+    { timeout: 60_000 },
+    async () => {
+      const { error, serverPid, fake } = await importInProcess("transfer-stubborn", { graceMs: 200, startupDelayMs });
+      assert.ok(error instanceof TransferError, String(error));
+      assert.match(error.message, /timed out/);
+      assert.ok(await waitUntilGone(serverPid), "the app-server survived SIGKILL");
+      const ignored = fake
+        .readLog()
+        .filter((call) => call.ignored)
+        .map((call) => call.signal);
+      assert.deepEqual(ignored, ["SIGINT", "SIGTERM"]);
+    },
+  );
+}
 
 test("transfer accepts --source with ~ expansion", () => {
   const { fake, cwd } = setup();

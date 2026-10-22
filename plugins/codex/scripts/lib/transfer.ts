@@ -8,7 +8,14 @@ import { UsageError } from "./args.ts";
 import { cleanCodexStderr } from "./codex-exec.ts";
 import { TRANSCRIPT_PATH_ENV } from "./env.ts";
 import { isRecord } from "./json.ts";
-import { type GroupExit, InterruptedError, spawnCodexGroup, type StopTiming } from "./process-group.ts";
+import {
+  type GroupExit,
+  InterruptedError,
+  pickStopTiming,
+  ReapError,
+  spawnCodexGroup,
+  type StopTiming,
+} from "./process-group.ts";
 
 const IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 // One deadline for the whole exchange: initialize, import, and completion.
@@ -156,7 +163,17 @@ function sessionMigration(sourcePath: string, cwd: string) {
   };
 }
 
-export type ImportOptions = StopTiming & { timeoutMs?: number; closeGraceMs?: number };
+export type ImportOptions = StopTiming & {
+  closeGraceMs?: number;
+  // Starts the deadline for the whole exchange and returns a function that
+  // cancels it. Tests inject a clock here; the default is IMPORT_TIMEOUT_MS.
+  deadline?: (expire: () => void) => () => void;
+};
+
+function defaultDeadline(expire: () => void): () => void {
+  const timer = setTimeout(expire, IMPORT_TIMEOUT_MS);
+  return () => clearTimeout(timer);
+}
 
 // Speaks newline-delimited JSON-RPC to `codex app-server` over stdio:
 // initialize, initialized, externalAgentConfig/import, then waits for the
@@ -171,8 +188,7 @@ export async function importClaudeSession(
   const group = spawnCodexGroup(["app-server"], {
     cwd,
     onStop: () => group.child.stdin.end(),
-    ...(options.interruptGraceMs === undefined ? {} : { interruptGraceMs: options.interruptGraceMs }),
-    ...(options.terminateGraceMs === undefined ? {} : { terminateGraceMs: options.terminateGraceMs }),
+    ...pickStopTiming(options),
   });
   const { child } = group;
   let stderr = "";
@@ -274,13 +290,13 @@ export async function importClaudeSession(
       send({ id, method, params });
     });
 
-  let deadlineTimer: NodeJS.Timeout | undefined;
+  let expireDeadline: ((error: Error) => void) | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    deadlineTimer = setTimeout(
-      () => reject(new TransferError("timed out waiting for Codex to import the Claude session.")),
-      options.timeoutMs ?? IMPORT_TIMEOUT_MS,
-    );
+    expireDeadline = reject;
   });
+  const cancelDeadline = (options.deadline ?? defaultDeadline)(() =>
+    expireDeadline?.(new TransferError("timed out waiting for Codex to import the Claude session.")),
+  );
   void deadline.catch(() => {});
   const withinDeadline = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, deadline]);
 
@@ -327,7 +343,7 @@ export async function importClaudeSession(
   }
 
   // Reap the server: close stdin, give it a moment, then stop the group.
-  clearTimeout(deadlineTimer);
+  cancelDeadline();
   onChange = null;
   child.stdin.end();
   const closeTimer = setTimeout(() => group.stop(), options.closeGraceMs ?? CLOSE_GRACE_MS);
@@ -335,6 +351,9 @@ export async function importClaudeSession(
   clearTimeout(closeTimer);
   lines.close();
 
+  if (!(exit instanceof Error) && exit.reapError !== null) {
+    throw new ReapError(exit.reapError);
+  }
   if (!(exit instanceof Error) && exit.receivedSignal) {
     throw new InterruptedError(exit.receivedSignal);
   }

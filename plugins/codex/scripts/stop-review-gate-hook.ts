@@ -80,6 +80,10 @@ async function main(): Promise<number> {
       "-",
     ];
     const result = await runCodex(args, { cwd, stdin: buildPrompt(lastMessage), timeoutMs: GATE_TIMEOUT_MS });
+    if (result.reapError !== null) {
+      process.stderr.write(`codex-plugin: ${result.reapError}\n`);
+      return 1;
+    }
     if (result.receivedSignal) {
       return signalExitCode(result.receivedSignal);
     }
