@@ -492,6 +492,8 @@ const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     run: runTask,
   },
   review: {
+    // `codex exec review` rejects a custom prompt together with --uncommitted
+    // or --base (a clap argument conflict), so the built-in review takes no text.
     spec: {
       booleans: ["wait"],
       values: ["cwd", "base", "model", "effort"],
