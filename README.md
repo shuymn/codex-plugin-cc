@@ -161,6 +161,8 @@ Tasks, reviews, and transfers run as regular Codex threads. Tasks and transfers 
 
 ## Development
 
+The plugin stays thin on purpose: reimplementing what the Codex CLI and Claude Code already provide, such as job management and background execution, was where the bugs came from. The design prefers to enforce permissions, decisions that belong to the user, and handoffs between the two models in code and schemas, and leaves how to investigate and solve a task to the models.
+
 The tools are pinned in `mise.toml`. After cloning, run `mise install`, then `pnpm install` and `pnpm exec lefthook install` to set up the dependencies and git hooks.
 
 ```bash
