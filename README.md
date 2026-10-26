@@ -165,6 +165,8 @@ The plugin stays thin on purpose: reimplementing what the Codex CLI and Claude C
 
 The tools are pinned in `mise.toml`. After cloning, run `mise install`, then `pnpm install` and `pnpm exec lefthook install` to set up the dependencies and git hooks.
 
+The GitHub repository settings are declared in `.github/infra.yaml`; review them with `mise exec -- gh-infra plan .github/infra.yaml` then apply them with `gh-infra apply` on the same file.
+
 ```bash
 pnpm run lint
 pnpm run fmt

@@ -10,6 +10,8 @@ betterleaks = "1"
 ghalint = "1"
 # The Codex CLI that `pnpm run test:cli-contract` checks the plugin against.
 "npm:@openai/codex" = "0"
+# Applies the repository settings declared in .github/infra.yaml.
+"github:babarot/gh-infra" = "0"
 
 [settings]
 lockfile = true
