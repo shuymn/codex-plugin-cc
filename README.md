@@ -54,7 +54,7 @@ Then run:
 
 Every command reads its options first and treats the rest as text. Put options before the text, and put text that starts with `-` after `--`. An unknown leading option is an error, not text. `--help` shows a command's options.
 
-`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead. `/codex:setup` and `/codex:transfer` always run in the foreground.
+`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead; `--background` states the default. `/codex:setup` and `/codex:transfer` always run in the foreground.
 
 ### `/codex:review`
 
@@ -103,7 +103,7 @@ Continue: /codex:rescue --thread <id> <follow-up>   |  Terminal: codex resume <i
 
 - `--resume` continues the latest Codex thread this Claude session started.
 - `--thread <id>` continues a specific thread this Claude session started. Use it when several tasks ran in parallel.
-- Either way, the thread must belong to the same workspace (Git root) as the current run.
+- Either way, the thread must belong to the same repository as the current run. It can continue in another worktree of that repository, for example after the work moved into one.
 - `--prompt-file <file>` reads the task text from a file instead.
 - `--model` and `--effort` go to Codex unchanged, and Codex checks the values.
 

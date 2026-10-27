@@ -45,10 +45,10 @@ export function isNotGitRepository(result: GitResult): boolean {
   return result.status === 128 && /not a git repository/.test(result.stderr);
 }
 
-// null only when Git confirmed that cwd is outside a repository; any other
-// failure throws GitError.
-export function gitToplevel(cwd: string): string | null {
-  const args = ["rev-parse", "--show-toplevel"];
+// The output of `git rev-parse <flags>`. null only when Git confirmed that cwd
+// is outside a repository; any other failure throws GitError.
+function revParse(cwd: string, flags: readonly string[]): string | null {
+  const args = ["rev-parse", ...flags];
   const result = git(cwd, args, { env: { ...process.env, ...C_LOCALE_ENV } });
   if (result.status !== 0) {
     if (isNotGitRepository(result)) {
@@ -56,11 +56,22 @@ export function gitToplevel(cwd: string): string | null {
     }
     throw gitFailure(args, result);
   }
-  const root = result.stdout.trim();
-  if (!root) {
+  const value = result.stdout.trim();
+  if (!value) {
     throw gitFailure(args, result);
   }
-  return root;
+  return value;
+}
+
+export function gitToplevel(cwd: string): string | null {
+  return revParse(cwd, ["--show-toplevel"]);
+}
+
+// The real path of the repository's common Git directory, which all worktrees
+// of one repository share.
+export function gitCommonDir(cwd: string): string | null {
+  const dir = revParse(cwd, ["--path-format=absolute", "--git-common-dir"]);
+  return dir === null ? null : canonicalWorkspaceRoot(dir);
 }
 
 // The form a workspace root is stored and compared in: its real path, or the

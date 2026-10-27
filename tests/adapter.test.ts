@@ -260,6 +260,47 @@ test("resume is refused when the recorded workspace differs", () => {
   assert.equal(fake.readLog().length, 1);
 });
 
+test("resume continues a thread in another worktree of the same repository", () => {
+  const { fake, repo } = setup();
+  const worktree = path.join(makeTempDir(), "wt");
+  git(repo, ["worktree", "add", "-q", "-b", "wt", worktree], fake.env);
+  const thread = threadIdFrom(runAdapter("task", "a", { env: fake.env, cwd: repo }).stdout);
+  const recordFile = path.join(fake.dataDir, "threads", "session-a", `${thread}.json`);
+  const record = () => JSON.parse(fs.readFileSync(recordFile, "utf8")) as { cwd: string; repo: string | null };
+  const repoDir = fs.realpathSync(path.join(repo, ".git"));
+  assert.equal(record().repo, repoDir);
+
+  const moved = runAdapter("task", `--thread ${thread} go on`, { env: fake.env, cwd: worktree });
+  assert.equal(moved.status, 0, moved.stderr);
+  const [, resumed] = fake.readLog();
+  assert.equal(resumed?.cwd, worktree);
+  assert.deepEqual(resumed?.argv.slice(-2), [thread, "-"]);
+  assert.equal(record().cwd, fs.realpathSync(worktree));
+  assert.equal(record().repo, repoDir);
+
+  // And back from the worktree to the main checkout.
+  assert.equal(runAdapter("task", "--resume back", { env: fake.env, cwd: repo }).status, 0);
+  assert.equal(record().cwd, fs.realpathSync(repo));
+});
+
+test("--background is accepted as the default and conflicts with --wait", () => {
+  const { fake, repo } = setup();
+  fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
+  for (const [sub, input] of [
+    ["task", "--background go"],
+    ["review", "--background"],
+    ["adversarial-review", "--background focus"],
+  ] as const) {
+    assert.equal(runAdapter(sub, input, { env: fake.env, cwd: repo }).status, 0, sub);
+    assert.equal(
+      runAdapter(sub, input.replace("--background", "--wait --background"), { env: fake.env, cwd: repo }).status,
+      2,
+      sub,
+    );
+  }
+  assert.equal(fake.readLog().length, 3);
+});
+
 // EARS 10, 11
 test("reviews always run read-only with explicit approvals, whatever the options", () => {
   const { fake, repo } = setup();
