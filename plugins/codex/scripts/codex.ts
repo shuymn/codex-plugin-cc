@@ -31,6 +31,7 @@ import { isReviewGateEnabled, setReviewGate } from "./lib/gate-config.ts";
 import {
   detectDefaultBranch,
   git,
+  gitCommonDir,
   gitToplevel,
   hasUncommittedChanges,
   resolveCommit,
@@ -171,11 +172,14 @@ async function runTask(options: Options, text: string): Promise<number> {
   }
 
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  // Resolved before Codex starts: a Git failure in the thread-started callback
+  // would stop a run that is already under way.
+  const repo = gitCommonDir(cwd);
   const sessionId = currentSessionId();
   const requestedThread = stringOption(options, "thread");
   const resumeId =
     options.resume === true || requestedThread !== undefined
-      ? resolveResumeThread(sessionId, workspaceRoot, requestedThread)
+      ? resolveResumeThread(sessionId, workspaceRoot, repo, requestedThread)
       : null;
   const sandbox = options["read-only"] === true ? "read-only" : "workspace-write";
 
@@ -198,7 +202,7 @@ async function runTask(options: Options, text: string): Promise<number> {
       onThreadStarted: (threadId) => {
         process.stdout.write(`Codex thread: ${threadId}\n`);
         if (sessionId !== null) {
-          recorded = recordThread(sessionId, threadId, workspaceRoot);
+          recorded = recordThread(sessionId, threadId, workspaceRoot, repo);
         }
       },
     });

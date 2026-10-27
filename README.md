@@ -103,7 +103,7 @@ Continue: /codex:rescue --thread <id> <follow-up>   |  Terminal: codex resume <i
 
 - `--resume` continues the latest Codex thread this Claude session started.
 - `--thread <id>` continues a specific thread this Claude session started. Use it when several tasks ran in parallel.
-- Either way, the thread must belong to the same workspace (Git root) as the current run.
+- Either way, the thread must belong to the same repository as the current run. It can continue in another worktree of that repository, for example after the work moved into one.
 - `--prompt-file <file>` reads the task text from a file instead.
 - `--model` and `--effort` go to Codex unchanged, and Codex checks the values.
 
