@@ -137,6 +137,7 @@ Runs a Codex task. The text after the leading options goes to Codex verbatim.
 
 Options:
   --wait               Run in the foreground (handled by Claude Code).
+  --background         Run in the background, the default (handled by Claude Code).
   --read-only          Run Codex in a read-only sandbox (default: workspace-write).
   --resume             Continue the latest Codex thread of this Claude session.
   --thread <id>        Continue the given Codex thread of this Claude session.
@@ -271,6 +272,7 @@ branch against the default branch when there are none.
 
 Options:
   --wait             Run in the foreground (handled by Claude Code).
+  --background       Run in the background, the default (handled by Claude Code).
   --base <ref>       Review the branch against <ref>.
   --cwd, -C <dir>    Review the repository at <dir>.
   --model <model>    Pass -m <model> to Codex.
@@ -313,6 +315,7 @@ Runs a read-only Codex review that challenges the change and its design.
 
 Options:
   --wait             Run in the foreground (handled by Claude Code).
+  --background       Run in the background, the default (handled by Claude Code).
   --base <ref>       Review the branch against <ref>.
   --cwd, -C <dir>    Review the repository at <dir>.
   --model <model>    Pass -m <model> to Codex.
@@ -483,10 +486,13 @@ async function runTransfer(options: Options): Promise<number> {
 const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
   task: {
     spec: {
-      booleans: ["wait", "read-only", "resume"],
+      booleans: ["wait", "background", "read-only", "resume"],
       values: ["cwd", "model", "effort", "prompt-file", "thread"],
       text: "optional",
-      exclusive: [["resume", "thread"]],
+      exclusive: [
+        ["wait", "background"],
+        ["resume", "thread"],
+      ],
     },
     usage: TASK_USAGE,
     run: runTask,
@@ -495,16 +501,22 @@ const SUBCOMMANDS: Readonly<Record<string, Subcommand>> = {
     // `codex exec review` rejects a custom prompt together with --uncommitted
     // or --base (a clap argument conflict), so the built-in review takes no text.
     spec: {
-      booleans: ["wait"],
+      booleans: ["wait", "background"],
       values: ["cwd", "base", "model", "effort"],
       text: "forbidden",
+      exclusive: [["wait", "background"]],
       textForbiddenHint: "/codex:review takes no focus text; use /codex:adversarial-review for that.",
     },
     usage: REVIEW_USAGE,
     run: (options) => runReview(options),
   },
   "adversarial-review": {
-    spec: { booleans: ["wait"], values: ["cwd", "base", "model", "effort"], text: "optional" },
+    spec: {
+      booleans: ["wait", "background"],
+      values: ["cwd", "base", "model", "effort"],
+      text: "optional",
+      exclusive: [["wait", "background"]],
+    },
     usage: ADVERSARIAL_USAGE,
     run: runAdversarialReview,
   },

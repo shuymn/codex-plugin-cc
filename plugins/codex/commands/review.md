@@ -1,6 +1,6 @@
 ---
 description: Run a read-only Codex review of the uncommitted changes or of the current branch
-argument-hint: "[--wait] [--base <ref>] [--cwd <dir>] [--model <model>] [--effort <effort>]"
+argument-hint: "[--wait | --background] [--base <ref>] [--cwd <dir>] [--model <model>] [--effort <effort>]"
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
@@ -23,7 +23,7 @@ Command rules:
 
 Execution mode:
 - If `--wait` is among the leading options, run the command in the foreground.
-- Otherwise run it with `run_in_background: true`, tell the user "Codex review started in the background. You will be notified when it finishes.", and end your turn. Do not poll or wait for it.
+- Otherwise, with `--background` or neither option, run it with `run_in_background: true`, tell the user "Codex review started in the background. You will be notified when it finishes.", and end your turn. Do not poll or wait for it.
 
 When the command finishes:
 - On exit code 0, present stdout as the `codex-result-handling` skill describes.

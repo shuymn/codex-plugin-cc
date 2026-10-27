@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `/codex:rescue`, `/codex:review`, and `/codex:adversarial-review` accept `--background` again. It states the default and cannot be combined with `--wait`.
+
 ## 2.1.0
 
 - The stop-time review gate now reviews changes in the working tree instead of Claude's previous turn. It compares Git tree snapshots of the working tree, skips Codex when nothing changed since the last allowed snapshot, and reviews commits made during the session.

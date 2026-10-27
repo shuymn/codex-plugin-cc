@@ -63,7 +63,7 @@ test("commands and skills no longer mention the removed runtime", () => {
     const content = fs.readFileSync(file, "utf8");
     assert.doesNotMatch(
       content,
-      /codex-companion|codex:codex-rescue|\/codex:(status|result|cancel)\b|--resume-last|--fresh|--background/,
+      /codex-companion|codex:codex-rescue|\/codex:(status|result|cancel)\b|--resume-last|--fresh/,
       file,
     );
   }

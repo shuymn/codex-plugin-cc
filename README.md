@@ -54,7 +54,7 @@ Then run:
 
 Every command reads its options first and treats the rest as text. Put options before the text, and put text that starts with `-` after `--`. An unknown leading option is an error, not text. `--help` shows a command's options.
 
-`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead. `/codex:setup` and `/codex:transfer` always run in the foreground.
+`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead; `--background` states the default. `/codex:setup` and `/codex:transfer` always run in the foreground.
 
 ### `/codex:review`
 

@@ -260,6 +260,24 @@ test("resume is refused when the recorded workspace differs", () => {
   assert.equal(fake.readLog().length, 1);
 });
 
+test("--background is accepted as the default and conflicts with --wait", () => {
+  const { fake, repo } = setup();
+  fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
+  for (const [sub, input] of [
+    ["task", "--background go"],
+    ["review", "--background"],
+    ["adversarial-review", "--background focus"],
+  ] as const) {
+    assert.equal(runAdapter(sub, input, { env: fake.env, cwd: repo }).status, 0, sub);
+    assert.equal(
+      runAdapter(sub, input.replace("--background", "--wait --background"), { env: fake.env, cwd: repo }).status,
+      2,
+      sub,
+    );
+  }
+  assert.equal(fake.readLog().length, 3);
+});
+
 // EARS 10, 11
 test("reviews always run read-only with explicit approvals, whatever the options", () => {
   const { fake, repo } = setup();
