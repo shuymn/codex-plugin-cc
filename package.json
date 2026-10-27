@@ -1,6 +1,6 @@
 {
   "name": "codex-plugin-cc",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "private": true,
   "description": "Use Codex from Claude Code to review code or delegate tasks.",
   "license": "Apache-2.0",

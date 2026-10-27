@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Use Codex from Claude Code to review code or delegate tasks.",
   "author": {
     "name": "shuymn"

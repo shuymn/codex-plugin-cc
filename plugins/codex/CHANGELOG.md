@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.1
 
 - `--resume` and `--thread` continue a thread in another worktree of the repository it started in, instead of refusing because the Git root differs.
 - `/codex:rescue`, `/codex:review`, and `/codex:adversarial-review` accept `--background` again. It states the default and cannot be combined with `--wait`.
