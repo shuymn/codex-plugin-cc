@@ -54,21 +54,21 @@ url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/
 provenance = "cosign"
 
 [[tools."github:babarot/gh-infra"]]
-version = "0.18.0"
+version = "0.19.0"
 backend = "github:babarot/gh-infra"
 specifiers = ["0"]
 
 [tools."github:babarot/gh-infra"."platforms.linux-x64"]
-checksum = "sha256:b3a1c51899cda58eed6313a9f83e059b9980a1417e455190049e83d7da35818e"
+checksum = "sha256:53279aaff9ec965e352f4ddb260edfafbac21992732dab4c76a9de59414c651d"
 checksum_source = "mise-versions"
-url = "https://github.com/babarot/gh-infra/releases/download/v0.18.0/gh-infra_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/babarot/gh-infra/releases/assets/697883292"
+url = "https://github.com/babarot/gh-infra/releases/download/v0.19.0/gh-infra_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/babarot/gh-infra/releases/assets/703991219"
 
 [tools."github:babarot/gh-infra"."platforms.macos-arm64"]
-checksum = "sha256:210f9f57a2b61bc25c025fe5e8cb7cce6b3fc194f8a9c15dd20cc3757aae0e9c"
+checksum = "sha256:91b4241a43b3ebf07209ba26deb68f5a85abdf93a9de3cfb32416c0ba6dbbad2"
 checksum_source = "mise-versions"
-url = "https://github.com/babarot/gh-infra/releases/download/v0.18.0/gh-infra_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/babarot/gh-infra/releases/assets/697883261"
+url = "https://github.com/babarot/gh-infra/releases/download/v0.19.0/gh-infra_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/babarot/gh-infra/releases/assets/703991190"
 
 [[tools.node]]
 version = "24.22.2"
