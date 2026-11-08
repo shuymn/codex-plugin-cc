@@ -17,8 +17,8 @@
     "test:cli-contract": "CODEX_CLI_CONTRACT=1 node --test tests/cli-contract.test.ts"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
     "@types/node": "24.19.2",
     "lefthook": "2.1.16",
     "oxfmt": "0.71.0",
