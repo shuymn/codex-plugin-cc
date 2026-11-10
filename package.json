@@ -23,7 +23,7 @@
     "lefthook": "2.2.2",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0",
-    "oxlint-tsgolint": "7.0.2003",
+    "oxlint-tsgolint": "7.0.2006",
     "typescript": "7.0.2"
   },
   "engines": {
