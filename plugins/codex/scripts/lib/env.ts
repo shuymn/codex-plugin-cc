@@ -31,12 +31,26 @@ function shellEscape(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-export function appendEnvVar(name: string, value: unknown): void {
+// Replaces any earlier export of the same name: SessionStart runs again on
+// resume and after each compaction, and repeated lines grew the file without
+// bound until the Bash tool could no longer run.
+export function setEnvVar(name: string, value: unknown): void {
   const envFile = process.env.CLAUDE_ENV_FILE;
   if (!envFile || typeof value !== "string" || value === "") {
     return;
   }
-  fs.appendFileSync(envFile, `export ${name}=${shellEscape(value)}\n`, "utf8");
+  let text = "";
+  try {
+    text = fs.readFileSync(envFile, "utf8");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+      throw error;
+    }
+  }
+  const prefix = `export ${name}=`;
+  const lines = (text ? text.replace(/\n$/, "").split("\n") : []).filter((line) => !line.startsWith(prefix));
+  lines.push(`${prefix}${shellEscape(value)}`);
+  writeFileAtomic(envFile, `${lines.join("\n")}\n`);
 }
 
 // Writes through a temporary file in the same directory and renames it, so a

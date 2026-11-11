@@ -101,6 +101,25 @@ test("SessionStart exports the session id, transcript path, and data dir to CLAU
   assert.equal(printed.stdout, `abc-123\n${transcript}\n${fake.dataDir}`);
 });
 
+test("SessionStart run again replaces its exports instead of repeating them", () => {
+  const fake = makeFakeEnv();
+  const envFile = path.join(makeTempDir(), "env.sh");
+  fs.writeFileSync(envFile, "export OTHER='kept'\n");
+  const env = { ...fake.env, CLAUDE_ENV_FILE: envFile };
+  for (const sessionId of ["first", "second"]) {
+    const result = runHook(SESSION_START, { session_id: sessionId, transcript_path: "/tmp/t.jsonl" }, env, fake.home);
+    assert.equal(result.status, 0, result.stderr);
+  }
+
+  assert.deepEqual(fs.readFileSync(envFile, "utf8").split("\n"), [
+    "export OTHER='kept'",
+    "export CODEX_COMPANION_SESSION_ID='second'",
+    "export CODEX_COMPANION_TRANSCRIPT_PATH='/tmp/t.jsonl'",
+    `export CLAUDE_PLUGIN_DATA='${fake.dataDir}'`,
+    "",
+  ]);
+});
+
 test("SessionStart without CLAUDE_ENV_FILE does nothing", () => {
   const fake = makeFakeEnv();
   const result = runHook(SESSION_START, { session_id: "abc" }, fake.env, fake.home);
