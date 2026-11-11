@@ -4,7 +4,7 @@
 // session started from, so the first stop reviews commits made before it.
 
 import { readStdin } from "./lib/args.ts";
-import { appendEnvVar, PLUGIN_DATA_ENV, safeSessionId, SESSION_ID_ENV, TRANSCRIPT_PATH_ENV } from "./lib/env.ts";
+import { setEnvVar, PLUGIN_DATA_ENV, safeSessionId, SESSION_ID_ENV, TRANSCRIPT_PATH_ENV } from "./lib/env.ts";
 import { isReviewGateEnabled } from "./lib/gate-config.ts";
 import { GitError, resolveWorkspaceRoot } from "./lib/git.ts";
 import { isRecord } from "./lib/json.ts";
@@ -40,9 +40,9 @@ try {
   const raw = (await readStdin()).trim();
   const parsed: unknown = raw ? JSON.parse(raw) : {};
   const input = isRecord(parsed) ? parsed : {};
-  appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
-  appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
+  setEnvVar(SESSION_ID_ENV, input.session_id);
+  setEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
+  setEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
   recordGateStart(input);
 } catch (error) {
   process.stderr.write(`codex-plugin: ${error instanceof Error ? error.message : String(error)}\n`);
