@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.2
+
+- The SessionStart hook replaces its earlier exports in `CLAUDE_ENV_FILE` instead of appending them again on every resume and compaction. In long sessions the repeated lines made every Bash tool call fail.
+
 ## 2.1.1
 
 - `--resume` and `--thread` continue a thread in another worktree of the repository it started in, instead of refusing because the Git root differs.
