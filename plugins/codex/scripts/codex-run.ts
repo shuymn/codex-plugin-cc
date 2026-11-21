@@ -198,6 +198,17 @@ function hasFinalMessage(resultFile: string): boolean {
   }
 }
 
+// takeSnapshot reports Git failures itself; anything else it throws, such as
+// a temporary index that could not be created, is a failed snapshot too.
+function safeSnapshot(root: string): TimedSnapshot {
+  try {
+    return timedSnapshot(root);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { snapshot: { kind: "failed", reason, submodules: [] }, ms: 0 };
+  }
+}
+
 type Outcome = { exit: number; summary: string | null; detail: string };
 
 // The exit code and the stderr summary. A group that could not be confirmed
@@ -296,13 +307,13 @@ export async function main(argv: string[], io: RunnerIo): Promise<number> {
   io.stdout(`run: ${runId}\n`);
 
   const writable = !request.readOnly;
-  let baseline: TimedSnapshot | null = null;
+  // A snapshot failure only makes the report unknown; Codex still runs.
+  const baseline = writable ? safeSnapshot(workspaceRoot) : null;
   let scratch: Scratch | null = null;
   let outcome: Outcome;
   let result: CodexRunResult | null = null;
   try {
     if (writable) {
-      baseline = timedSnapshot(workspaceRoot);
       scratch = createScratch();
       io.stdout(`scratch: ${escapeLine(scratch.path)}\n`);
     }
@@ -330,10 +341,8 @@ export async function main(argv: string[], io: RunnerIo): Promise<number> {
   const reapError = result?.reapError ?? null;
   let report: ChangeReport = { kind: "read-only" };
   let finalMs: number | undefined;
-  if (writable) {
-    if (baseline === null) {
-      report = { kind: "unknown", category: "snapshot-failed", reason: "no baseline snapshot", baseline: null };
-    } else if (baseline.snapshot.kind !== "tree") {
+  if (baseline !== null) {
+    if (baseline.snapshot.kind !== "tree") {
       report = snapshotProblem(baseline.snapshot, "baseline", null);
     } else if (reapError !== null) {
       report = {
@@ -345,14 +354,7 @@ export async function main(argv: string[], io: RunnerIo): Promise<number> {
     } else if (result?.receivedSignal) {
       report = { kind: "unknown", category: "interrupted", reason: "interrupted", baseline: baseline.snapshot.tree };
     } else {
-      let final: TimedSnapshot;
-      try {
-        final = timedSnapshot(workspaceRoot);
-      } catch (error) {
-        // Such as a temporary index that could not be created.
-        const reason = error instanceof Error ? error.message : String(error);
-        final = { snapshot: { kind: "failed", reason, submodules: [] }, ms: 0 };
-      }
+      const final = safeSnapshot(workspaceRoot);
       finalMs = final.ms;
       report =
         final.snapshot.kind === "tree"

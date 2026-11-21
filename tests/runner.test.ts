@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 import { main } from "../plugins/codex/scripts/codex-run.ts";
 import {
@@ -492,4 +492,50 @@ test("codex gets the scratch directory as TMPDIR, without the caller's GIT_DIR a
     new RegExp(`^1 files \\(baseline [0-9a-f]{40}, paths relative to ${fs.realpathSync(worktree)}\\)$`),
   );
   assert.match(result.stdout, /\n {2}A made-in-worktree\.txt\n/);
+});
+
+// Runs main in this process with the fake's environment.
+async function runInProcess(fake: FakeEnv, args: string[]) {
+  const saved = { ...process.env };
+  process.env = { ...fake.env };
+  let stdout = "";
+  let stderr = "";
+  try {
+    const exit = await main(args, {
+      stdout: (text) => {
+        stdout += text;
+      },
+      stderr: (text) => {
+        stderr += text;
+      },
+    });
+    return { exit, stdout, stderr };
+  } finally {
+    process.env = saved;
+  }
+}
+
+test("an exception from the baseline snapshot is reported as unknown, and codex still runs", async () => {
+  const { fake, repo } = setup();
+  const original = fs.mkdtempSync;
+  // Only the snapshot's temporary index fails, as on a full disk.
+  const mocked = mock.method(fs, "mkdtempSync", (prefix: string, options?: fs.EncodingOption) => {
+    if (prefix.includes("codex-plugin-snapshot-")) {
+      throw Object.assign(new Error("ENOSPC: no space left on device, mkdtemp"), { code: "ENOSPC" });
+    }
+    return original(prefix, options);
+  });
+  try {
+    const result = await runInProcess(fake, ["--prompt-file", writePrompt(), "--cwd", repo]);
+    assert.equal(result.exit, 0, result.stderr);
+    assert.equal(fake.readLog().length, 1);
+    assert.equal(outputLine(result.stdout, "status"), "ok (exit 0)");
+    assert.equal(
+      outputLine(result.stdout, "changes"),
+      "unknown: baseline snapshot failed: ENOSPC: no space left on device, mkdtemp",
+    );
+    assert.equal(readRunLog(fake)[0]?.unknown, "snapshot-failed");
+  } finally {
+    mocked.mock.restore();
+  }
 });
