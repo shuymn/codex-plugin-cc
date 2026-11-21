@@ -84,9 +84,15 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   let giveUpTimer: NodeJS.Timeout | undefined;
   // Set once the group is confirmed gone; only the output streams remain.
   let groupGone = false;
+  // The last EPERM from signaling the group, reported only if the group is
+  // still not confirmed gone when the stop ladder gives up.
+  let pendingError: string | null = null;
 
-  // ESRCH means the group is already gone; any other failure (EPERM, ...)
-  // means it may still be running and is kept as a reap failure.
+  // ESRCH means the group is gone. EPERM is not final by itself: on macOS,
+  // signaling a group whose only members are zombies not yet reaped (codex
+  // before Node reaps it, or a descendant whose parent is in another group)
+  // fails with EPERM until they are reaped. Any other failure means the group
+  // may still be running and is kept as a reap failure.
   const signalGroup = (signal: NodeJS.Signals | 0): boolean => {
     if (child.pid === undefined) {
       return false;
@@ -97,9 +103,15 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     } catch (error) {
       const code = errorCode(error);
       if (code === "ESRCH") {
+        pendingError = null;
         return false;
       }
-      reapError ??= `could not signal the Codex process group ${child.pid} (${code}); Codex processes may still be running.`;
+      const message = `could not signal the Codex process group ${child.pid} (${code}); Codex processes may still be running.`;
+      if (code === "EPERM") {
+        pendingError = message;
+      } else {
+        reapError ??= message;
+      }
       return true;
     }
   };
@@ -168,7 +180,9 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
       if (groupGone || !signalGroup(0)) {
         return;
       }
-      reapError ??= `the Codex process group ${child.pid ?? "?"} did not exit after SIGKILL; Codex processes may still be running.`;
+      reapError ??=
+        pendingError ??
+        `the Codex process group ${child.pid ?? "?"} did not exit after SIGKILL; Codex processes may still be running.`;
       finish();
     };
 
