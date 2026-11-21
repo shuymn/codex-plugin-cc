@@ -84,7 +84,8 @@ function revParse(cwd: string, flags: readonly string[]): string | null {
     }
     throw gitFailure(args, result);
   }
-  const value = result.stdout.trim();
+  // Only the newline Git ends the line with: a path may end in spaces.
+  const value = result.stdout.endsWith("\n") ? result.stdout.slice(0, -1) : result.stdout;
   if (!value) {
     throw gitFailure(args, result);
   }

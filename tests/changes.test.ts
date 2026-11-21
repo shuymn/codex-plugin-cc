@@ -59,3 +59,17 @@ test("outside Git the report is unknown with the reason", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(outputLine(result.stdout, "changes"), "unknown: not in a Git working tree");
 });
+
+test("a workspace root that ends in a space is measured as is, not as the trimmed path", () => {
+  const fake = makeFakeEnv();
+  const repo = makeRepo(fake.env);
+  const parent = makeTempDir();
+  const spaced = path.join(parent, "wt ");
+  git(repo, ["worktree", "add", "-q", "-b", "spaced", spaced], fake.env);
+  // A sibling at the trimmed path, which a trimmed root would measure instead.
+  git(repo, ["worktree", "add", "-q", "-b", "plain", path.join(parent, "wt")], fake.env);
+  const result = runWithActions(spaced, fake, [{ write: "only-in-spaced.txt", content: "x" }]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(outputLine(result.stdout, "changes") ?? "", new RegExp(`paths relative to ${spaced}\\)$`));
+  assert.match(result.stdout, /\n {2}A only-in-spaced\.txt\n/);
+});
