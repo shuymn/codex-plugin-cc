@@ -16,6 +16,10 @@ Breaking changes:
 - Write-capable runs create a temporary scratch directory passed to Codex as `TMPDIR` and `--add-dir`, and delete it after Codex's process group exits.
 - Each run prints a run id and appends a metadata-only JSON line to `<state>/runs.jsonl`.
 
+Fixes:
+
+- Fixed stopping a background `codex-run` on macOS from exiting 1 with `scratch left:` and `changes: unknown: Codex processes may still be running` when no Codex process remained (a process group holding only unreaped zombies returns `EPERM`). Interrupted runs now exit 128+n, report `changes: unknown: interrupted`, and delete the scratch directory.
+
 ## 2.1.2
 
 - The SessionStart hook replaces its earlier exports in `CLAUDE_ENV_FILE` instead of appending them again on every resume and compaction. In long sessions the repeated lines made every Bash tool call fail.

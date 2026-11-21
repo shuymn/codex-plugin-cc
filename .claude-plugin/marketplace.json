@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "Claude Code plugin marketplace for the Codex CLI runner.",
-    "version": "2.1.2"
+    "version": "3.0.0"
   },
   "plugins": [
     {
       "name": "codex",
       "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
-      "version": "2.1.2",
+      "version": "3.0.0",
       "author": {
         "name": "shuymn"
       },

@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "2.1.2",
+  "version": "3.0.0",
   "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
   "author": {
     "name": "shuymn"
