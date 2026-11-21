@@ -56,24 +56,6 @@ export type CodexGroup = {
   exited: Promise<GroupExit>;
 };
 
-// Copies the timing fields that are set, for passing options along.
-export function pickStopTiming(options: StopTiming): StopTiming {
-  const timing: StopTiming = {};
-  if (options.interruptGraceMs !== undefined) {
-    timing.interruptGraceMs = options.interruptGraceMs;
-  }
-  if (options.terminateGraceMs !== undefined) {
-    timing.terminateGraceMs = options.terminateGraceMs;
-  }
-  if (options.reapGraceMs !== undefined) {
-    timing.reapGraceMs = options.reapGraceMs;
-  }
-  if (options.kill !== undefined) {
-    timing.kill = options.kill;
-  }
-  return timing;
-}
-
 function errorCode(error: unknown): string {
   return error instanceof Error && "code" in error ? String(error.code) : "unknown";
 }

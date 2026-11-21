@@ -1,7 +1,7 @@
 import readline from "node:readline";
 
 import { isRecord, type JsonObject } from "./json.ts";
-import { type GroupExit, pickStopTiming, spawnCodexGroup, type StopTiming } from "./process-group.ts";
+import { type GroupExit, spawnCodexGroup, type StopTiming } from "./process-group.ts";
 
 export { CodexNotFoundError } from "./process-group.ts";
 
@@ -19,8 +19,6 @@ const MAX_STDERR_CHARS = 1_000_000;
 
 const SIGNAL_NUMBERS: Readonly<Record<string, number>> = { SIGINT: 2, SIGTERM: 15 };
 
-export type ModelOptions = { model?: string; effort?: string };
-
 export type CodexRunOptions = StopTiming & {
   cwd: string;
   // The whole environment of codex; process.env when omitted.
@@ -32,24 +30,10 @@ export type CodexRunOptions = StopTiming & {
 };
 
 export type CodexRunResult = GroupExit & {
-  threadId: string | null;
-  lastAgentMessage: string | null;
   errorMessage: string | null;
   stderr: string;
   callbackError: Error | null;
 };
-
-// Passes the model and effort through unchanged, and only when given.
-export function modelArgs(options: ModelOptions): string[] {
-  const args: string[] = [];
-  if (options.model !== undefined) {
-    args.push("-m", options.model);
-  }
-  if (options.effort !== undefined) {
-    args.push("-c", `model_reasoning_effort=${JSON.stringify(options.effort)}`);
-  }
-  return args;
-}
 
 export function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (SIGNAL_NUMBERS[signal] ?? 15);
@@ -70,12 +54,13 @@ export function cleanCodexStderr(stderr: string): string {
 }
 
 // One line explaining why codex failed: the turn's error from the JSONL
-// events, else the last stderr line that mentions an error, else the last line.
-export function failureReason(result: Pick<CodexRunResult, "errorMessage" | "stderr">): string {
-  if (result.errorMessage) {
-    return result.errorMessage;
+// events, else the last line of the cleaned stderr tail that mentions an
+// error, else its last line.
+export function failureReason(errorMessage: string | null, cleanedTail: string): string {
+  if (errorMessage) {
+    return errorMessage;
   }
-  const lines = cleanCodexStderr(result.stderr).split("\n").filter(Boolean);
+  const lines = cleanedTail.split("\n").filter(Boolean);
   return lines.findLast((line) => /error/i.test(line)) ?? lines.at(-1) ?? "";
 }
 
@@ -89,15 +74,12 @@ function stringField(object: JsonObject | null, key: string): string | null {
 }
 
 export async function runCodex(args: readonly string[], options: CodexRunOptions): Promise<CodexRunResult> {
-  const group = spawnCodexGroup(args, {
-    cwd: options.cwd,
-    ...(options.env === undefined ? {} : { env: options.env }),
-    ...pickStopTiming(options),
-  });
+  // spawnCodexGroup reads only its own fields of the options.
+  const group = spawnCodexGroup(args, options);
   const { child } = group;
 
+  // Only to report each thread once.
   let threadId: string | null = null;
-  let lastAgentMessage: string | null = null;
   let turnFailure: string | null = null;
   let lastError: string | null = null;
   let stderr = "";
@@ -131,13 +113,6 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
         }
         break;
       }
-      case "item.completed": {
-        const item = asObject(event.item);
-        if (item?.type === "agent_message") {
-          lastAgentMessage = stringField(item, "text") ?? lastAgentMessage;
-        }
-        break;
-      }
       case "turn.failed":
         turnFailure ??= stringField(asObject(event.error), "message");
         break;
@@ -157,8 +132,6 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
     const exit = await group.exited;
     return {
       ...exit,
-      threadId,
-      lastAgentMessage,
       errorMessage: turnFailure ?? lastError,
       stderr,
       callbackError,

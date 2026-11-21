@@ -30,11 +30,11 @@ function isValidThreadId(threadId: string): boolean {
   return THREAD_ID_PATTERN.test(threadId);
 }
 
-// Returns false, writing nothing, when the id is not safe as a file name.
-// Throws when the record cannot be written.
-export function recordThread(threadId: string, workspaceRoot: string, repo: string | null): boolean {
+// Writes nothing when the id is not safe as a file name. Throws when the
+// record cannot be written.
+export function recordThread(threadId: string, workspaceRoot: string, repo: string | null): void {
   if (!isValidThreadId(threadId)) {
-    return false;
+    return;
   }
   const record: ThreadRecord = {
     cwd: canonicalWorkspaceRoot(workspaceRoot),
@@ -42,7 +42,6 @@ export function recordThread(threadId: string, workspaceRoot: string, repo: stri
     updatedAt: new Date().toISOString(),
   };
   writeFileAtomic(recordPath(threadId), `${JSON.stringify(record)}\n`);
-  return true;
 }
 
 // updatedAt is written for inspection but not read back.

@@ -6,13 +6,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { escapeLine } from "./escape.ts";
-import { safeGit, type Snapshot, takeSnapshot } from "./snapshot.ts";
+import { gitFailure } from "./git.ts";
+import { safeGit, type Snapshot } from "./snapshot.ts";
 
 // How many changed paths the report prints; beyond this the full list goes to
 // changes.txt in the run directory.
-export const MAX_LISTED_CHANGES = 10;
+const MAX_LISTED_CHANGES = 10;
 
-export type ChangeEntry = { status: string; path: string };
+type ChangeEntry = { status: string; path: string };
 
 // Why the report could not tell, as categories for the run log.
 export type UnknownCategory = "not-git" | "snapshot-failed" | "interrupted" | "reap-error";
@@ -21,14 +22,6 @@ export type ChangeReport =
   | { kind: "changes"; baseline: string; final: string; entries: ChangeEntry[] }
   | { kind: "unknown"; category: UnknownCategory; reason: string; baseline: string | null }
   | { kind: "read-only" };
-
-export type TimedSnapshot = { snapshot: Snapshot; ms: number };
-
-export function timedSnapshot(root: string): TimedSnapshot {
-  const started = performance.now();
-  const snapshot = takeSnapshot(root);
-  return { snapshot, ms: Math.round(performance.now() - started) };
-}
 
 // The unknown report for a snapshot that produced no tree.
 export function snapshotProblem(
@@ -53,9 +46,7 @@ export function compareTrees(root: string, baseline: string, final: string): Cha
   const args = ["diff-tree", "-r", "-z", "--no-renames", "--name-status", baseline, final];
   const result = safeGit(root, args);
   if (result.status !== 0) {
-    const detail = result.stderr.trim().split("\n").at(-1) ?? "";
-    const reason = detail || (result.status === null ? "timed out or could not run" : `exit ${String(result.status)}`);
-    return { kind: "unknown", category: "snapshot-failed", reason: `git diff-tree failed: ${reason}`, baseline };
+    return { kind: "unknown", category: "snapshot-failed", reason: gitFailure(args, result).message, baseline };
   }
   // -z --name-status records: <status> NUL <path> NUL, repeated.
   const fields = result.stdout.split("\0");

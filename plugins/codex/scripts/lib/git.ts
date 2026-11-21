@@ -20,7 +20,7 @@ const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 // another repository's hook or `git -C` context can inherit them, and they
 // would then point every call, and Codex, at that repository instead of --cwd.
 // Variables that only limit discovery, such as GIT_CEILING_DIRECTORIES, stay.
-export const REPOSITORY_SELECTION_VARIABLES: readonly string[] = [
+const REPOSITORY_SELECTION_VARIABLES: readonly string[] = [
   "GIT_DIR",
   "GIT_WORK_TREE",
   "GIT_INDEX_FILE",
@@ -59,7 +59,7 @@ export function git(cwd: string, args: readonly string[], options: GitOptions = 
 // a timeout, a broken config, a corrupt index.
 export class GitError extends Error {}
 
-function gitFailure(args: readonly string[], result: GitResult): GitError {
+export function gitFailure(args: readonly string[], result: GitResult): GitError {
   const detail = result.stderr.trim().split("\n").at(-1) ?? "";
   const reason = detail || (result.status === null ? "timed out or could not run" : `exit ${String(result.status)}`);
   return new GitError(`git ${args[0] ?? ""} failed: ${reason}`);
@@ -92,7 +92,7 @@ function revParse(cwd: string, flags: readonly string[]): string | null {
   return value;
 }
 
-export function gitToplevel(cwd: string): string | null {
+function gitToplevel(cwd: string): string | null {
   return revParse(cwd, ["--show-toplevel"]);
 }
 

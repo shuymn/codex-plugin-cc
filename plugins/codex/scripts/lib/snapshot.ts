@@ -18,9 +18,8 @@ import { git, type GitResult, isNotGitRepository } from "./git.ts";
 export type Snapshot =
   | { kind: "tree"; tree: string }
   | { kind: "not-git" }
-  // Inside a repository, but no tree was built. submodules: the repository's
-  // submodule paths, whose contents the caller must review some other way.
-  | { kind: "failed"; reason: string; submodules: string[] };
+  // Inside a repository, but no tree was built.
+  | { kind: "failed"; reason: string };
 
 export type SnapshotOptions = {
   timeoutMs?: number;
@@ -61,14 +60,7 @@ export function safeGit(
   });
 }
 
-class SnapshotFailure extends Error {
-  readonly submodules: string[];
-
-  constructor(message: string, submodules: string[] = []) {
-    super(message);
-    this.submodules = submodules;
-  }
-}
+class SnapshotFailure extends Error {}
 
 type Run = (args: readonly string[], options?: { env?: Record<string, string>; input?: string }) => GitResult;
 
@@ -96,20 +88,20 @@ function check(result: GitResult, what: string): string {
   return result.stdout;
 }
 
-// Gitlink entries (submodules and embedded repositories) in an index: the
-// user's, or the temporary one with env. Looking inside a submodule would run
-// git there, under the submodule's own configuration, so the snapshot stops.
-function submodulePaths(run: Run, env?: Record<string, string>): string[] {
-  const paths = new Set<string>();
+// Stops the snapshot when an index has a gitlink entry (a submodule or an
+// embedded repository): the user's index, or the temporary one with env.
+// Looking inside a submodule would run git there, under the submodule's own
+// configuration.
+function rejectSubmodules(run: Run, env?: Record<string, string>): void {
   // -z --stage records: "<mode> <object> <stage>\t<path>".
   const listing = run(["ls-files", "-z", "--stage"], env === undefined ? {} : { env });
-  for (const record of check(listing, "ls-files").split("\0")) {
-    const tab = record.indexOf("\t");
-    if (tab !== -1 && record.startsWith("160000 ")) {
-      paths.add(record.slice(tab + 1));
-    }
+  if (
+    check(listing, "ls-files")
+      .split("\0")
+      .some((record) => record.startsWith("160000 ") && record.includes("\t"))
+  ) {
+    throw new SnapshotFailure("the repository has submodules, which the snapshot does not look into");
   }
-  return [...paths];
 }
 
 // The first path `git add -A` would read whose `filter` attribute is set, or
@@ -164,12 +156,6 @@ function disabledFilterConfig(run: Run): string[] {
   return args;
 }
 
-function rejectSubmodules(submodules: string[]): void {
-  if (submodules.length > 0) {
-    throw new SnapshotFailure("the repository has submodules, which the snapshot does not look into", submodules);
-  }
-}
-
 // True only when Git confirmed the directory is not in a work tree. Any other
 // failure, such as a broken config, happens inside a repository.
 function isOutsideWorkTree(result: GitResult): boolean {
@@ -193,7 +179,7 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     const noFilters = disabledFilterConfig(plainRun);
     const run: Run = (args, runOptions) => plainRun([...noFilters, ...args], runOptions);
 
-    rejectSubmodules(submodulePaths(run));
+    rejectSubmodules(run);
     const filtered = firstFilteredPath(run);
     if (filtered !== null) {
       throw new SnapshotFailure(`files use a Git filter (${filtered}), which the snapshot will not run`);
@@ -205,11 +191,11 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     const hasHead = run(["rev-parse", "--verify", "--quiet", "HEAD"]).status === 0;
     check(run(hasHead ? ["read-tree", "HEAD"] : ["read-tree", "--empty"], { env }), "read-tree");
     // HEAD's submodules, even ones removed from the user's index.
-    rejectSubmodules(submodulePaths(run, env));
+    rejectSubmodules(run, env);
     options.beforeAdd?.();
     check(run(["add", "-A"], { env }), "add");
     // Untracked embedded repositories, which `git add` records as gitlinks.
-    rejectSubmodules(submodulePaths(run, env));
+    rejectSubmodules(run, env);
     const tree = check(run(["write-tree"], { env }), "write-tree").trim();
     if (!isTreeId(tree)) {
       throw new SnapshotFailure("git write-tree returned no tree id");
@@ -217,7 +203,7 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
     return { kind: "tree", tree };
   } catch (error) {
     if (error instanceof SnapshotFailure) {
-      return { kind: "failed", reason: error.message, submodules: error.submodules };
+      return { kind: "failed", reason: error.message };
     }
     throw error;
   } finally {

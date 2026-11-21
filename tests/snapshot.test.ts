@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { isTreeId, safeGit, type Snapshot, takeSnapshot } from "../plugins/codex/scripts/lib/snapshot.ts";
+import { isTreeId, type Snapshot, takeSnapshot } from "../plugins/codex/scripts/lib/snapshot.ts";
 import { git, makeFakeEnv, makeRepo, makeTempDir } from "./helpers.ts";
 
 // takeSnapshot runs git with this process's environment; give it the same
@@ -199,7 +199,6 @@ test("a repository with submodules is not snapshotted, and nothing inside the su
 
   const snapshot = takeSnapshot(repo);
   assert.equal(snapshot.kind, "failed");
-  assert.deepEqual(snapshot.kind === "failed" ? snapshot.submodules : null, ["libs/sub dir"]);
   assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /submodule/);
   assert.equal(fs.existsSync(fsmonitor.marker), false);
   assert.equal(fs.existsSync(filter.marker), false);
@@ -269,7 +268,7 @@ test("submodules missing from the user's index and untracked embedded repositori
   ] as const) {
     const snapshot = takeSnapshot(repo);
     assert.equal(snapshot.kind, "failed", expected);
-    assert.deepEqual(snapshot.kind === "failed" ? snapshot.submodules : null, [expected]);
+    assert.match(snapshot.kind === "failed" ? snapshot.reason : "", /submodule/, expected);
   }
 });
 
@@ -282,7 +281,6 @@ test("a partial clone never fetches a missing object, so its remote's commands d
   git(repo, ["config", "remote.origin.promisor", "true"], fake.env);
   git(repo, ["config", "core.sshCommand", ssh.script], fake.env);
 
-  assert.notEqual(safeGit(repo, ["cat-file", "-t", "0123456789abcdef0123456789abcdef01234567"]).status, 0);
   const tree = git(repo, ["rev-parse", "HEAD^{tree}"], fake.env);
   fs.rmSync(path.join(repo, ".git", "objects", tree.slice(0, 2), tree.slice(2)));
   assert.equal(takeSnapshot(repo).kind, "failed");

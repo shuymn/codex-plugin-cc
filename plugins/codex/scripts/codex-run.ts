@@ -5,27 +5,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import {
-  type ChangeReport,
-  compareTrees,
-  formatChanges,
-  snapshotProblem,
-  type TimedSnapshot,
-  timedSnapshot,
-} from "./lib/changes.ts";
+import { type ChangeReport, compareTrees, formatChanges, snapshotProblem } from "./lib/changes.ts";
 import {
   APPROVAL_OVERRIDES,
   CodexNotFoundError,
   type CodexRunResult,
   cleanCodexStderr,
   failureReason,
-  modelArgs,
   runCodex,
   signalExitCode,
 } from "./lib/codex-exec.ts";
 import { escapeLine } from "./lib/escape.ts";
 import { GitError, gitCommonDir, gitEnv, resolveWorkspaceRoot } from "./lib/git.ts";
 import type { StopTiming } from "./lib/process-group.ts";
+import { type Snapshot, takeSnapshot } from "./lib/snapshot.ts";
 import { appendRunLog, createRunDir, newRunId, pruneRunDirs, type RunLogEntry } from "./lib/runs.ts";
 import { createScratch, removeScratch, type Scratch } from "./lib/scratch.ts";
 import { checkThread, recordThread, ThreadRefusedError } from "./lib/thread-store.ts";
@@ -69,7 +62,7 @@ error or refused --thread, 3 codex not on PATH, 128+n stopped by signal n.
 class UsageError extends Error {}
 
 // Seams for in-process tests; the executable passes only the streams.
-export type RunnerIo = {
+type RunnerIo = {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   stopTiming?: StopTiming;
@@ -170,11 +163,10 @@ function isOnPath(command: string): boolean {
 function codexArgs(request: Request, scratch: Scratch | null, resultFile: string): string[] {
   // Options of `codex exec` go before `resume`: the CLI rejects -s and
   // --add-dir after it.
+  // The model and effort pass through unchanged, and only when given.
   const runArgs = [
-    ...modelArgs({
-      ...(request.model === undefined ? {} : { model: request.model }),
-      ...(request.effort === undefined ? {} : { effort: request.effort }),
-    }),
+    ...(request.model === undefined ? [] : ["-m", request.model]),
+    ...(request.effort === undefined ? [] : ["-c", `model_reasoning_effort=${JSON.stringify(request.effort)}`]),
     "--json",
     "-o",
     resultFile,
@@ -199,14 +191,18 @@ function hasFinalMessage(resultFile: string): boolean {
   }
 }
 
+type TimedSnapshot = { snapshot: Snapshot; ms: number };
+
 // takeSnapshot reports Git failures itself; anything else it throws, such as
 // a temporary index that could not be created, is a failed snapshot too.
 function safeSnapshot(root: string): TimedSnapshot {
   try {
-    return timedSnapshot(root);
+    const started = performance.now();
+    const snapshot = takeSnapshot(root);
+    return { snapshot, ms: Math.round(performance.now() - started) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { snapshot: { kind: "failed", reason, submodules: [] }, ms: 0 };
+    return { snapshot: { kind: "failed", reason }, ms: 0 };
   }
 }
 
@@ -230,7 +226,7 @@ function outcomeOf(result: CodexRunResult, resultFile: string): Outcome {
     };
   }
   if (result.exitCode !== 0) {
-    const reason = failureReason(result);
+    const reason = failureReason(result.errorMessage, tail);
     const status = result.exitCode === null ? `signal ${result.exitSignal ?? "unknown"}` : String(result.exitCode);
     return { exit: EXIT_FAILED, summary: `codex exited with ${status}${reason ? `: ${reason}` : ""}`, detail: tail };
   }
