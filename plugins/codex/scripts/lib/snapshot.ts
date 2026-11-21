@@ -33,8 +33,19 @@ const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 // Configuration that would otherwise run programs: fsmonitor during index
 // reads, hooks such as post-index-change during index writes. The untracked
-// cache is off so the temporary index never depends on the user's.
-const SAFE_CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"];
+// cache is off so the temporary index never depends on the user's, and split
+// index is off because Git writes its shared index next to the user's index,
+// not the temporary one.
+const SAFE_CONFIG = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "core.untrackedCache=false",
+  "-c",
+  "core.splitIndex=false",
+];
 
 // GIT_OPTIONAL_LOCKS: no optional locks, so the user's index is never
 // refreshed. GIT_NO_LAZY_FETCH: a partial clone never fetches a missing object
