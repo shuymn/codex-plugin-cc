@@ -166,6 +166,8 @@ test("argv: --thread resumes with -s and --add-dir before resume; --model and --
     assert.equal(optionValue(call, "-m"), "gpt x");
     assert.ok(call.argv.includes('model_reasoning_effort="xhigh"'));
   }
+  assert.equal(optionValue(writeResume, "-s"), "workspace-write");
+  assert.equal(optionValue(readResume, "-s"), "read-only");
   assert.ok(writeResume.argv.includes("--add-dir"));
   assert.ok(!readResume.argv.includes("--add-dir"));
 });
@@ -463,15 +465,60 @@ test("the runner exits as soon as a quick codex has finished", async () => {
   assert.ok(exitedAt - done < 1_500, `the runner exited ${exitedAt - done} ms after codex`);
 });
 
+const REPOSITORY_SELECTION = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+// A git on PATH that records the GIT_ variables of every call the runner
+// makes, then runs the real git.
+function loggingGit(fake: FakeEnv): { dir: string; calls: () => Record<string, string>[] } {
+  const dir = makeTempDir();
+  const log = path.join(dir, "calls.log");
+  const realGit = fs.realpathSync(path.join(path.dirname(fake.tmp), "tools", "git"));
+  fs.writeFileSync(
+    path.join(dir, "git"),
+    `#!/bin/sh\n{ echo ---; env | grep '^GIT_'; } >> "${log}"\nexec "${realGit}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  const calls = () =>
+    fs
+      .readFileSync(log, "utf8")
+      .split("---\n")
+      .filter(Boolean)
+      .map((block) =>
+        Object.fromEntries(
+          block
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+        ),
+      );
+  return { dir, calls };
+}
+
 // H12
-test("codex gets the scratch directory as TMPDIR, without the caller's GIT_DIR and GIT_WORK_TREE, and the scratch directory is deleted", () => {
+test("codex gets the scratch directory as TMPDIR, without the caller's repository-selection variables, and the scratch directory is deleted", () => {
   const { fake, repo } = setup();
   const worktree = path.join(makeTempDir(), "wt");
   git(repo, ["worktree", "add", "-q", "-b", "wt", worktree], fake.env);
   const other = makeRepo(fake.env);
+  const otherGit = path.join(other, ".git");
+  const logged = loggingGit(fake);
+  const ceiling = fake.env.GIT_CEILING_DIRECTORIES;
+  assert.ok(ceiling);
   const result = run(fake, ["--prompt-file", writePrompt(), "--cwd", worktree], other, {
-    GIT_DIR: path.join(other, ".git"),
+    PATH: `${logged.dir}${path.delimiter}${fake.env.PATH ?? ""}`,
+    GIT_DIR: otherGit,
     GIT_WORK_TREE: other,
+    GIT_INDEX_FILE: path.join(otherGit, "index"),
+    GIT_COMMON_DIR: otherGit,
+    GIT_OBJECT_DIRECTORY: path.join(otherGit, "objects"),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(otherGit, "objects"),
     FAKE_CODEX_PROBE: "1",
     FAKE_CODEX_ACTIONS: JSON.stringify([{ write: "made-in-worktree.txt", content: "x" }]),
   });
@@ -480,8 +527,26 @@ test("codex gets the scratch directory as TMPDIR, without the caller's GIT_DIR a
   const scratch = outputLine(result.stdout, "scratch");
   assert.ok(scratch);
   assert.equal(call.env?.TMPDIR, scratch);
-  assert.equal(call.env?.GIT_DIR, undefined);
-  assert.equal(call.env?.GIT_WORK_TREE, undefined);
+  for (const name of REPOSITORY_SELECTION) {
+    assert.equal(call.env?.[name], undefined, name);
+  }
+  assert.equal(call.env?.GIT_CEILING_DIRECTORIES, ceiling);
+
+  // The runner's own Git calls: none of the six, except the snapshot's own
+  // temporary index, and the ceiling kept.
+  const gitCalls = logged.calls();
+  assert.ok(gitCalls.length > 5, String(gitCalls.length));
+  for (const env of gitCalls) {
+    for (const name of REPOSITORY_SELECTION) {
+      if (name === "GIT_INDEX_FILE" && env[name] !== undefined) {
+        assert.match(env[name], new RegExp(`^${fake.tmp}/codex-plugin-snapshot-[^/]+/index$`));
+      } else {
+        assert.equal(env[name], undefined, `${name} in ${JSON.stringify(env)}`);
+      }
+    }
+    assert.equal(env.GIT_CEILING_DIRECTORIES, ceiling);
+  }
+
   assert.ok(call.probe?.startsWith(`${scratch}${path.sep}`));
   assert.equal(fs.existsSync(scratch), false);
   assert.equal(outputLine(result.stdout, "scratch left"), undefined);
@@ -492,6 +557,21 @@ test("codex gets the scratch directory as TMPDIR, without the caller's GIT_DIR a
     new RegExp(`^1 files \\(baseline [0-9a-f]{40}, paths relative to ${fs.realpathSync(worktree)}\\)$`),
   );
   assert.match(result.stdout, /\n {2}A made-in-worktree\.txt\n/);
+});
+
+test("a scratch directory that cannot be deleted is printed as scratch left", () => {
+  const { fake, repo } = setup();
+  const result = run(fake, ["--prompt-file", writePrompt()], repo, { FAKE_CODEX_LOCK_SCRATCH: "1" });
+  const scratch = outputLine(result.stdout, "scratch");
+  assert.ok(scratch);
+  const locked = path.join(scratch, "locked");
+  try {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(outputLine(result.stdout, "scratch left"), scratch);
+    assert.ok(fs.existsSync(locked));
+  } finally {
+    fs.chmodSync(locked, 0o700);
+  }
 });
 
 // Runs main in this process with the fake's environment.

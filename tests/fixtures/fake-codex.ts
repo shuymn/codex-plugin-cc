@@ -167,6 +167,18 @@ function writeProbe(): string | undefined {
   return file;
 }
 
+// Leaves a directory in $TMPDIR that the runner cannot delete: a file in a
+// directory without write permission. The test restores the permission.
+function lockScratch(): void {
+  if (process.env.FAKE_CODEX_LOCK_SCRATCH !== "1" || !process.env.TMPDIR) {
+    return;
+  }
+  const dir = path.join(process.env.TMPDIR, "locked");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "file"), "x");
+  fs.chmodSync(dir, 0o500);
+}
+
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -184,6 +196,7 @@ async function runExec(call: ExecCall): Promise<void> {
   }
   const stdin = await readStdin();
   const probe = writeProbe();
+  lockScratch();
   log({ stdin, env: codexEnv(), ...(probe === undefined ? {} : { probe }) });
   applyActions();
 
