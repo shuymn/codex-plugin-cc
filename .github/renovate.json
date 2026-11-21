@@ -3,5 +3,20 @@
   "extends": ["github>shuymn/github-actions#main"],
   "mise": {
     "enabled": false
-  }
+  },
+  "packageRules": [
+    {
+      "description": "Keep one PR per 0.x dependency; the preset leaves 0.x minors for manual merge, so separate PRs per minor pile up",
+      "matchManagers": ["npm"],
+      "matchCurrentVersion": "/^v?0\\./",
+      "separateMultipleMinor": false
+    },
+    {
+      "description": "mise.toml sets the Node major, which Renovate does not manage here; upgrade Node by hand together with mise.toml",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
 }
