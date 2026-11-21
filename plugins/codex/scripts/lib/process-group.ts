@@ -84,17 +84,15 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   let giveUpTimer: NodeJS.Timeout | undefined;
   // Set once the group is confirmed gone; only the output streams remain.
   let groupGone = false;
-  // Set once Node has reaped codex, the group leader.
-  let leaderReaped = false;
-  // An EPERM seen before the leader was reaped.
+  // The last EPERM from signaling the group, reported only if the group is
+  // still not confirmed gone when the stop ladder gives up.
   let pendingError: string | null = null;
 
-  // ESRCH means the group is already gone; any other failure (EPERM, ...)
-  // means it may still be running and is kept as a reap failure. On macOS,
-  // signaling a group whose only member is the leader, exited but not yet
-  // reaped, fails with EPERM; so an EPERM before the leader is reaped only
-  // counts if the group still cannot be signaled once it is, or if the
-  // stop ladder gives up first.
+  // ESRCH means the group is gone. EPERM is not final by itself: on macOS,
+  // signaling a group whose only members are zombies not yet reaped (codex
+  // before Node reaps it, or a descendant whose parent is in another group)
+  // fails with EPERM until they are reaped. Any other failure means the group
+  // may still be running and is kept as a reap failure.
   const signalGroup = (signal: NodeJS.Signals | 0): boolean => {
     if (child.pid === undefined) {
       return false;
@@ -105,11 +103,12 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     } catch (error) {
       const code = errorCode(error);
       if (code === "ESRCH") {
+        pendingError = null;
         return false;
       }
       const message = `could not signal the Codex process group ${child.pid} (${code}); Codex processes may still be running.`;
-      if (code === "EPERM" && !leaderReaped) {
-        pendingError ??= message;
+      if (code === "EPERM") {
+        pendingError = message;
       } else {
         reapError ??= message;
       }
@@ -202,7 +201,6 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     child.on("exit", (code, signal) => {
       exitCode = code;
       exitSignal = signal;
-      leaderReaped = true;
       void (async () => {
         // Anything left in the group (the launcher's child, or processes
         // Codex started) is stopped too; giveUp bounds this wait.

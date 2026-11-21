@@ -125,6 +125,43 @@ test("an EPERM that persists after the leader is reaped is a reap failure", { ti
   }
 });
 
+// After codex is reaped, a descendant left in the group can be a zombie held
+// for a while by a parent in another group.
+test(
+  "a group that answers EPERM after codex exits, then ESRCH before the deadline, is not a reap failure",
+  { timeout: 30_000 },
+  async () => {
+    const { restore } = useFake("ok");
+    try {
+      let firstCall: number | null = null;
+      let calledBeforeExit = false;
+      const group = spawnCodexGroup(EXEC_ARGS, {
+        cwd: makeTempDir(),
+        interruptGraceMs: 100,
+        terminateGraceMs: 100,
+        reapGraceMs: 2_000,
+        kill: (pid, signal) => {
+          void pid;
+          void signal;
+          if (group.child.exitCode === null && group.child.signalCode === null) {
+            calledBeforeExit = true;
+          }
+          firstCall ??= Date.now();
+          const code = Date.now() - firstCall < 400 ? "EPERM" : "ESRCH";
+          throw Object.assign(new Error(`kill failed: ${code}`), { code });
+        },
+      });
+      group.child.stdin.end("go");
+      const exit = await group.exited;
+      assert.equal(exit.exitCode, 0);
+      assert.equal(calledBeforeExit, false);
+      assert.equal(exit.reapError, null);
+    } finally {
+      restore();
+    }
+  },
+);
+
 test("a run whose group outlives codex is not a success", { timeout: 30_000 }, async () => {
   const { restore } = useFake("ok");
   try {
