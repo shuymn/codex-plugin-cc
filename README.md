@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- **Node.js 24 or later.** The runner is written in TypeScript and uses Node's built-in type stripping, with no runtime dependencies.
+- **Node.js 24.2 or later.** The runner is written in TypeScript and uses Node's built-in type stripping and `import.meta.main`, with no runtime dependencies.
 - **Codex CLI**, on `PATH` and logged in. Install it with `npm install -g @openai/codex`, then run `codex login`. Codex usage counts toward your ChatGPT plan or API key limits.
 - **Git 2.45 or later** for the working-tree change report (uses `--no-lazy-fetch`; older Git versions report `changes: unknown: ...`).
 
@@ -104,7 +104,7 @@ When Codex reports `thread.started`, `codex-run` writes `<state>/threads/<thread
 - **Inside Git:** the current `--cwd` shares the same Git common directory (`repo`). Any worktree of that repository matches; a Git record never matches by path alone.
 - **Outside Git:** the current `--cwd` is also outside Git and has the exact same canonical path.
 
-Otherwise `codex-run` exits `2` before starting Codex, naming the recorded location and suggesting `codex resume <id>` in a terminal.
+Otherwise `codex-run` exits `2` before starting Codex: an invalid id is rejected outright, an unknown id suggests `codex resume <id>` in a terminal, and a mismatched repository or directory names the recorded location and suggests `--cwd` in that repository or `codex resume <id>` in a terminal.
 
 Thread records are not scoped to a Claude Code session. Concurrent runs on the same thread are not guarded; keep rounds of a thread sequential.
 
@@ -114,7 +114,7 @@ The default sandbox is `workspace-write`, allowing Codex to run probe scripts, t
 
 `codex-run` uses the `codex` binary on `PATH` and Codex's own configuration (`~/.codex/config.toml` and trusted project-level `.codex/config.toml`). Every run passes `-c approval_policy="never"`, `-c approvals_reviewer="user"`, and `--skip-git-repo-check`. `--model` and `--effort` are forwarded only when specified.
 
-Repository-selection Git environment variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`) are stripped from both the runner's Git calls and Codex's environment so Git resolves the repository from `--cwd`.
+Repository-selection Git environment variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`) are stripped from both the runner's Git calls and Codex's environment so Git resolves the repository from `--cwd` (the snapshot's own Git calls set a temporary `GIT_INDEX_FILE` for the snapshot index).
 
 ### Change report
 
@@ -160,7 +160,7 @@ Limit: Codex's `shell_environment_policy` controls the environment of its shell 
 
 `codex-run` runs in the foreground of its own process. For long runs, use Claude Code's Bash tool background mode (`run_in_background`); stdout stays short so the completion notification is concise.
 
-When stopped with `SIGINT` or `SIGTERM`, `codex-run` terminates Codex's entire process group in stages (`SIGINT`, `SIGTERM`, `SIGKILL`), reports `changes: unknown: interrupted` (with the baseline tree id if taken), deletes the scratch directory, and exits `128+n`. If the process group cannot be confirmed gone, it exits `1` and leaves the scratch directory (`scratch left: <dir>`).
+When stopped with `SIGINT` or `SIGTERM`, `codex-run` terminates Codex's entire process group in stages (`SIGINT`, `SIGTERM`, `SIGKILL`) and exits `128+n`; on write-capable runs it reports `changes: unknown: interrupted` (with the baseline tree id if taken) and deletes the scratch directory, while a stopped `--read-only` run reports `changes: not checked: read-only` and has no scratch directory. If the process group cannot be confirmed gone, it exits `1` and, on write-capable runs, leaves the scratch directory (`scratch left: <dir>`).
 
 ### State directory and run log
 
