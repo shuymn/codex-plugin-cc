@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { ensureReaped, runCodex } from "../plugins/codex/scripts/lib/codex-exec.ts";
-import { ReapError, spawnCodexGroup } from "../plugins/codex/scripts/lib/process-group.ts";
+import { runCodex } from "../plugins/codex/scripts/lib/codex-exec.ts";
+import { spawnCodexGroup } from "../plugins/codex/scripts/lib/process-group.ts";
 import { makeFakeEnv, makeTempDir, waitForFile, waitUntilGone } from "./helpers.ts";
 
 // Runs the fake codex in-process, so the kill function can be swapped for one
@@ -84,8 +84,7 @@ test("a run whose group outlives codex is not a success", { timeout: 30_000 }, a
     });
     assert.equal(result.exitCode, 0);
     assert.ok(probes > 0);
-    assert.ok(result.reapError);
-    assert.throws(() => ensureReaped(result), ReapError);
+    assert.match(result.reapError ?? "", /EPERM/);
   } finally {
     restore();
   }
@@ -102,7 +101,6 @@ test("ESRCH from a stop signal means the group is already gone", { timeout: 30_0
     });
     assert.equal(result.exitCode, 0);
     assert.equal(result.reapError, null);
-    assert.doesNotThrow(() => ensureReaped(result));
   } finally {
     restore();
   }

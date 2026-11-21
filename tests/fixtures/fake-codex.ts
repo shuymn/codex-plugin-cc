@@ -4,10 +4,9 @@
 // by FAKE_CODEX_SCENARIO.
 
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 
 const scenario = process.env.FAKE_CODEX_SCENARIO ?? "ok";
 const logPath = process.env.FAKE_CODEX_LOG;
@@ -15,11 +14,9 @@ const argv = process.argv.slice(2);
 
 type ExecCall = {
   sandbox: string | null;
-  subcommand: "review" | "resume" | null;
+  subcommand: "resume" | null;
   outputFile: string | null;
-  outputSchema: string | null;
   resumeId: string | null;
-  readsStdin: boolean;
 };
 
 function log(entry: Record<string, unknown>): void {
@@ -38,22 +35,14 @@ function reject(reason: string): never {
 }
 
 // Options shared by every exec level (global = true in the real CLI).
-const GLOBAL_VALUE_OPTIONS = new Set(["-c", "-m", "-o", "--output-schema"]);
-const GLOBAL_FLAGS = new Set(["--json", "--ephemeral", "--skip-git-repo-check"]);
+const GLOBAL_VALUE_OPTIONS = new Set(["-c", "-m", "-o"]);
+const GLOBAL_FLAGS = new Set(["--json", "--skip-git-repo-check"]);
 // Options the real CLI accepts only before the subcommand.
-const TOP_LEVEL_VALUE_OPTIONS = new Set(["-s"]);
+const TOP_LEVEL_VALUE_OPTIONS = new Set(["-s", "--add-dir"]);
 
 function parseExec(args: readonly string[]): ExecCall {
-  const call: ExecCall = {
-    sandbox: null,
-    subcommand: null,
-    outputFile: null,
-    outputSchema: null,
-    resumeId: null,
-    readsStdin: false,
-  };
+  const call: ExecCall = { sandbox: null, subcommand: null, outputFile: null, resumeId: null };
   const seen = new Set<string>();
-  let reviewTarget: string | null = null;
   const positionals: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -67,13 +56,18 @@ function parseExec(args: readonly string[]): ExecCall {
       return value;
     };
 
-    if (positionals.length === 0 && call.subcommand === null && (arg === "review" || arg === "resume")) {
+    if (positionals.length === 0 && call.subcommand === null && arg === "resume") {
       call.subcommand = arg;
       continue;
     }
     if (TOP_LEVEL_VALUE_OPTIONS.has(arg)) {
       if (call.subcommand !== null) {
         reject(`${arg} after the ${call.subcommand} subcommand`);
+      }
+      // --add-dir may repeat; its value is only checked to be there.
+      if (arg === "--add-dir") {
+        takeValue();
+        continue;
       }
       if (seen.has(arg)) {
         reject(`duplicate ${arg}`);
@@ -97,19 +91,10 @@ function parseExec(args: readonly string[]): ExecCall {
       seen.add(arg);
       if (arg === "-o") {
         call.outputFile = value;
-      } else if (arg === "--output-schema") {
-        call.outputSchema = value;
       }
       continue;
     }
     if (GLOBAL_FLAGS.has(arg)) {
-      continue;
-    }
-    if (call.subcommand === "review" && (arg === "--uncommitted" || arg === "--base")) {
-      if (reviewTarget !== null) {
-        reject("more than one review target");
-      }
-      reviewTarget = arg === "--base" ? takeValue() : arg;
       continue;
     }
     if (arg.startsWith("-") && arg !== "-") {
@@ -121,21 +106,13 @@ function parseExec(args: readonly string[]): ExecCall {
   if (call.sandbox === null) {
     reject("missing -s");
   }
-  if (call.subcommand === "review") {
-    if (reviewTarget === null || positionals.length > 0) {
-      reject("review needs exactly one target and no prompt");
-    }
-  } else if (call.subcommand === "resume") {
+  if (call.subcommand === "resume") {
     if (positionals.length !== 2 || positionals[1] !== "-") {
       reject("resume needs <id> -");
     }
     call.resumeId = positionals[0] ?? null;
-    call.readsStdin = true;
-  } else {
-    if (positionals.length !== 1 || positionals[0] !== "-") {
-      reject("exec needs - as the prompt");
-    }
-    call.readsStdin = true;
+  } else if (positionals.length !== 1 || positionals[0] !== "-") {
+    reject("exec needs - as the prompt");
   }
   return call;
 }
@@ -144,51 +121,62 @@ function emit(event: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-const VALID_REVIEW = {
-  verdict: "needs-attention",
-  summary: "Do not ship yet.",
-  findings: [
-    {
-      severity: "low",
-      title: "Minor gap",
-      body: "Low severity body.",
-      file: "src/b.ts",
-      line_start: 3,
-      line_end: 3,
-      confidence: 0.4,
-      recommendation: "",
-    },
-    {
-      severity: "critical",
-      title: "Data loss",
-      body: "Writes can be lost.",
-      file: "src/a.ts",
-      line_start: 10,
-      line_end: 12,
-      confidence: 0.9,
-      recommendation: "Write atomically.",
-    },
-  ],
-  next_steps: ["Fix the write path."],
-};
+function finalText(): Buffer {
+  if (process.env.FAKE_CODEX_MESSAGE_FILE !== undefined) {
+    return fs.readFileSync(process.env.FAKE_CODEX_MESSAGE_FILE);
+  }
+  return Buffer.from(process.env.FAKE_CODEX_MESSAGE ?? "Fake final message.");
+}
 
-function finalText(call: ExecCall): string {
-  if (process.env.FAKE_CODEX_MESSAGE !== undefined) {
-    return process.env.FAKE_CODEX_MESSAGE;
+// Edits to the working tree, relative to the cwd, applied in order:
+// FAKE_CODEX_ACTIONS='[{"write":"a.txt","content":"x"},{"delete":"b.txt"}]'.
+type Action = { write?: string; content?: string; delete?: string };
+
+function applyActions(): void {
+  const actions = JSON.parse(process.env.FAKE_CODEX_ACTIONS ?? "[]") as Action[];
+  for (const action of actions) {
+    if (action.write !== undefined) {
+      fs.mkdirSync(path.dirname(path.resolve(action.write)), { recursive: true });
+      fs.writeFileSync(action.write, action.content ?? "");
+    } else if (action.delete !== undefined) {
+      fs.rmSync(action.delete);
+    }
   }
-  if (scenario === "bad-json") {
-    return "this is not JSON {";
+}
+
+// What a probe would report: TMPDIR and the Git variables Codex received.
+function codexEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if ((key === "TMPDIR" || key.startsWith("GIT_")) && value !== undefined) {
+      env[key] = value;
+    }
   }
-  if (scenario === "schema-violation") {
-    return JSON.stringify({ ...VALID_REVIEW, extra: true });
+  return env;
+}
+
+// Leaves a file in $TMPDIR without cleaning up, like a probe script.
+function writeProbe(): string | undefined {
+  if (process.env.FAKE_CODEX_PROBE !== "1" || !process.env.TMPDIR) {
+    return undefined;
   }
-  if (call.outputSchema?.endsWith("stop-gate.schema.json")) {
-    return JSON.stringify({ verdict: "allow", summary: "No blocking problems.", findings: [] });
+  const dir = path.join(process.env.TMPDIR, "probe");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "probe.sh");
+  fs.writeFileSync(file, "echo probe\n");
+  return file;
+}
+
+// Leaves a directory in $TMPDIR that the runner cannot delete: a file in a
+// directory without write permission. The test restores the permission.
+function lockScratch(): void {
+  if (process.env.FAKE_CODEX_LOCK_SCRATCH !== "1" || !process.env.TMPDIR) {
+    return;
   }
-  if (call.outputSchema !== null) {
-    return JSON.stringify(VALID_REVIEW);
-  }
-  return call.subcommand === "review" ? "Review body from Codex.\n" : "Fake final message.";
+  const dir = path.join(process.env.TMPDIR, "locked");
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, "file"), "x");
+  fs.chmodSync(dir, 0o500);
 }
 
 async function readStdin(): Promise<string> {
@@ -196,7 +184,8 @@ async function readStdin(): Promise<string> {
   for await (const chunk of process.stdin) {
     chunks.push(chunk as Buffer);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  // Base64, so the test can compare the bytes exactly.
+  return Buffer.concat(chunks).toString("base64");
 }
 
 async function runExec(call: ExecCall): Promise<void> {
@@ -205,10 +194,17 @@ async function runExec(call: ExecCall): Promise<void> {
     process.stderr.write("fake-codex: exiting before reading stdin\n");
     process.exit(1);
   }
-  const stdin = call.readsStdin ? await readStdin() : "";
-  log({ stdin });
+  const stdin = await readStdin();
+  const probe = writeProbe();
+  lockScratch();
+  log({ stdin, env: codexEnv(), ...(probe === undefined ? {} : { probe }) });
+  applyActions();
 
   const threadId = call.resumeId ?? randomUUID();
+  if (scenario === "fail-before-thread") {
+    process.stderr.write("ERROR: could not start the thread\n");
+    process.exit(1);
+  }
   if (scenario === "escape") {
     // Leaves a grandchild in its own process group that keeps stdout and
     // stderr open for a few seconds, then ends on the first signal.
@@ -228,7 +224,7 @@ async function runExec(call: ExecCall): Promise<void> {
     // `slow` ends on the first signal; `ignore-sigint` behaves like a Codex
     // binary that keeps running after SIGINT and only stops on SIGTERM. The
     // handlers and the ready file come before thread.started, because the
-    // adapter may stop the run as soon as it sees that event.
+    // runner may stop the run as soon as it sees that event.
     const onSignal = (signal: NodeJS.Signals): void => {
       if (scenario === "ignore-sigint" && signal === "SIGINT") {
         log({ signal, ignored: true });
@@ -250,7 +246,9 @@ async function runExec(call: ExecCall): Promise<void> {
   emit({ type: "thread.started", thread_id: threadId });
   emit({ type: "turn.started" });
   if (scenario === "exit-nonzero") {
-    process.stderr.write("WARNING: proceeding, even though we could not update PATH: noise\nlog line\nERROR: boom\n");
+    process.stderr.write(
+      "WARNING: proceeding, even though we could not create PATH aliases: noise\nlog line\nERROR: boom\n",
+    );
     process.exit(1);
   }
   if (scenario === "turn-failed") {
@@ -263,18 +261,20 @@ async function runExec(call: ExecCall): Promise<void> {
     emit({ type: "item.completed", item: { id: "w1", type: "error", message: "under-development feature warning" } });
   }
 
-  // Simulates a background task writing while the review runs.
-  if (process.env.FAKE_CODEX_TOUCH_FILE) {
-    fs.appendFileSync(process.env.FAKE_CODEX_TOUCH_FILE, "written during the review\n");
-  }
-  if (scenario === "empty-output") {
+  if (scenario === "output-dir") {
+    // A directory, not a file, at the -o path.
+    if (call.outputFile) {
+      fs.mkdirSync(call.outputFile);
+    }
+  } else if (scenario === "empty-output") {
     if (call.outputFile) {
       fs.writeFileSync(call.outputFile, "");
     }
   } else {
-    const text = finalText(call);
-    emit({ type: "item.completed", item: { id: "m1", type: "agent_message", text } });
-    if (call.outputFile) {
+    const text = finalText();
+    emit({ type: "item.completed", item: { id: "m1", type: "agent_message", text: text.toString("utf8") } });
+    // no-output: an agent message without an -o file.
+    if (call.outputFile && scenario !== "no-output") {
       fs.writeFileSync(call.outputFile, text);
     }
   }
@@ -282,112 +282,6 @@ async function runExec(call: ExecCall): Promise<void> {
   if (process.env.FAKE_CODEX_DONE_FILE) {
     fs.writeFileSync(process.env.FAKE_CODEX_DONE_FILE, String(Date.now()));
   }
-}
-
-function send(message: Record<string, unknown>): void {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
-}
-
-type RpcMessage = {
-  id?: number | string;
-  method?: string;
-  params?: { migrationItems: { details: { sessions: { path: string }[] } }[] };
-  error?: unknown;
-};
-
-// Mirrors the real importer: a Claude transcript is importable only when a
-// record carries a cwd and there is at least one user message.
-function isImportable(sourcePath: string): boolean {
-  let hasCwd = false;
-  let hasUserMessage = false;
-  for (const line of fs.readFileSync(sourcePath, "utf8").split("\n")) {
-    try {
-      const record = JSON.parse(line) as { type?: string; cwd?: unknown; message?: unknown };
-      hasCwd ||= typeof record.cwd === "string";
-      hasUserMessage ||= record.type === "user" && record.message !== undefined;
-    } catch {
-      // The real importer skips lines that are not JSON.
-    }
-  }
-  return hasCwd && hasUserMessage;
-}
-
-function writeLedger(sourcePath: string): void {
-  if (scenario === "transfer-no-ledger" || !isImportable(sourcePath)) {
-    return;
-  }
-  const codexHome = process.env.CODEX_HOME ?? "";
-  const sha = createHash("sha256").update(fs.readFileSync(sourcePath)).digest("hex");
-  fs.mkdirSync(codexHome, { recursive: true });
-  fs.writeFileSync(
-    path.join(codexHome, "external_agent_session_imports.json"),
-    JSON.stringify({
-      records: [{ source_path: sourcePath, content_sha256: sha, imported_thread_id: randomUUID(), imported_at: 1 }],
-    }),
-  );
-}
-
-function runAppServer(): void {
-  log({ stdin: null });
-  const stubborn = scenario === "transfer-stubborn";
-  // Stays alive after stdin closes and on SIGINT and SIGTERM, so only SIGKILL ends it.
-  if (stubborn) {
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      process.on(signal, () => log({ signal, ignored: true }));
-    }
-    setInterval(() => {}, 1000);
-  } else {
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
-      process.on(signal, () => {
-        log({ signal });
-        process.exit(signal === "SIGINT" ? 130 : 143);
-      });
-    }
-  }
-  // Ready only once the signal handlers are in place.
-  if (process.env.FAKE_CODEX_READY_FILE) {
-    fs.writeFileSync(process.env.FAKE_CODEX_READY_FILE, String(process.pid));
-  }
-  const lines = readline.createInterface({ input: process.stdin });
-  lines.on("line", (line) => {
-    const message = JSON.parse(line) as RpcMessage;
-    log({ rpc: message });
-    // Alive but silent: never answers anything.
-    if (scenario === "transfer-hang" || stubborn) {
-      return;
-    }
-    if (message.method === "initialize") {
-      send({ id: message.id, result: { userAgent: "fake" } });
-      return;
-    }
-    if (message.method !== "externalAgentConfig/import") {
-      return;
-    }
-    if (scenario === "transfer-unsupported") {
-      send({ id: message.id, error: { code: -32601, message: "method not found" } });
-      return;
-    }
-    const sourcePath = message.params?.migrationItems[0]?.details.sessions[0]?.path ?? "";
-    // A server request the client must refuse, a completion for some other
-    // import, and the response. The matching completion, and the ledger that
-    // goes with it, come only later, so a client that stops waiting at the
-    // first completion finds no ledger.
-    send({ id: "server-1", method: "item/tool/requestUserInput", params: {} });
-    send({ method: "externalAgentConfig/import/completed", params: { importId: "other", itemTypeResults: [] } });
-    log({ completed: "other" });
-    send({ id: message.id, result: { importId: "import-1" } });
-    setTimeout(() => {
-      writeLedger(sourcePath);
-      log({ completed: "import-1" });
-      send({ method: "externalAgentConfig/import/completed", params: { importId: "import-1", itemTypeResults: [] } });
-    }, 300);
-  });
-  lines.on("close", () => {
-    log({ appServerClosed: true });
-    if (!stubborn) {
-      process.exit(0);
-    }
-  });
 }
 
 // Like the npm launcher of the real CLI: runs the actual binary as a child,
@@ -398,7 +292,7 @@ function runLauncher(): void {
     stdio: "inherit",
     env: { ...process.env, FAKE_CODEX_SCENARIO: "ignore-sigint" },
   });
-  log({ launcher: true, childPid: child.pid });
+  log({ launcher: true });
   const forward = (signal: NodeJS.Signals): void => {
     if (!child.killed) {
       child.kill(signal);
@@ -416,40 +310,12 @@ function runLauncher(): void {
   });
 }
 
-async function main(): Promise<void> {
-  // Simulates a slow start, before anything else happens.
-  const startupDelayMs = Number(process.env.FAKE_CODEX_STARTUP_DELAY_MS ?? "0");
-  if (startupDelayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
-  }
-  if (argv.length === 1 && argv[0] === "--version") {
-    log({});
-    process.stdout.write("codex-cli 0.0.0-fake\n");
-    return;
-  }
-  if (argv.length === 2 && argv[0] === "login" && argv[1] === "status") {
-    log({});
-    if (scenario === "logged-out") {
-      process.stderr.write("Not logged in\n");
-      process.exit(1);
-    }
-    process.stderr.write("Logged in using ChatGPT\n");
-    return;
-  }
-  if (argv.length === 1 && argv[0] === "app-server") {
-    runAppServer();
-    return;
-  }
-  if (argv[0] === "exec") {
-    const call = parseExec(argv.slice(1));
-    if (scenario === "launcher") {
-      runLauncher();
-      return;
-    }
-    await runExec(call);
-    return;
-  }
+if (argv[0] !== "exec") {
   reject("unknown command");
 }
-
-await main();
+const call = parseExec(argv.slice(1));
+if (scenario === "launcher") {
+  runLauncher();
+} else {
+  await runExec(call);
+}

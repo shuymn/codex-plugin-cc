@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs scripts/codex-run.ts of the plugin this file belongs to. Claude Code
+# puts the plugin's bin/ on the Bash tool's PATH; the file may also be reached
+# through symlinks, so its real location is resolved first. exec replaces the
+# shell, so signals reach the runner directly.
+set -eu
+self=$0
+hops=0
+while [ -L "$self" ]; do
+  hops=$((hops + 1))
+  if [ "$hops" -gt 40 ]; then
+    echo "codex-run: too many levels of symbolic links: $0" >&2
+    exit 1
+  fi
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+# An empty CDPATH: with one exported, cd would search it and print the directory.
+root=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd)
+exec node "$root/scripts/codex-run.ts" "$@"

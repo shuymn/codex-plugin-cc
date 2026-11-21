@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.0.0
+
+Replaced the built-in role commands, hooks, and skills with a single role-free executable, `codex-run`, in `plugins/codex/bin/` (added to the Bash tool's `PATH` by Claude Code). The caller writes the role and instructions in the prompt file.
+
+Breaking changes:
+
+- Removed `/codex:review`, `/codex:adversarial-review`, `/codex:rescue`, `/codex:setup`, and `/codex:transfer`.
+- Removed the stop-time review gate, all hooks (`SessionStart` and `Stop`), built-in review prompts and output schemas, and the `codex-prompting` and `codex-result-handling` skills.
+- Removed `scripts/codex.ts`, the heredoc argument protocol, `--resume`, `--wait`, `--background`, and short options (`-C`, `-h`). `codex-run` takes strict long options (`--prompt-file`, `--cwd`, `--read-only`, `--thread`, `--model`, `--effort`, `--help`), with `--prompt-file` required as an absolute path.
+- Default sandbox is `workspace-write`; pass `--read-only` for a read-only run.
+- Write-capable runs snapshot the Git working tree before and after Codex runs (requiring Git 2.45 or later) and print a change report on stdout (`none`, up to 10 changed paths with full lists written to `changes.txt`, or `unknown: <reason>`).
+- Codex's final message is written unchanged to `<state>/runs/<run id>/result.md`; stdout prints a short summary report. Run directories older than 7 days are pruned automatically.
+- Thread records are stored per thread id at `<state>/threads/<thread id>.json` without Claude session scoping, keeping the same-repository check across worktrees. 2.x thread records are not carried over.
+- Write-capable runs create a temporary scratch directory passed to Codex as `TMPDIR` and `--add-dir`, and delete it after Codex's process group exits.
+- Each run prints a run id and appends a metadata-only JSON line to `<state>/runs.jsonl`.
+
 ## 2.1.2
 
 - The SessionStart hook replaces its earlier exports in `CLAUDE_ENV_FILE` instead of appending them again on every resume and compaction. In long sessions the repeated lines made every Bash tool call fail.

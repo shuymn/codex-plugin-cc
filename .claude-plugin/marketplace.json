@@ -4,13 +4,13 @@
     "name": "shuymn"
   },
   "metadata": {
-    "description": "Codex plugins to use in Claude Code for delegation and code review.",
+    "description": "Claude Code plugin marketplace for the Codex CLI runner.",
     "version": "2.1.2"
   },
   "plugins": [
     {
       "name": "codex",
-      "description": "Use Codex from Claude Code to review code or delegate tasks.",
+      "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
       "version": "2.1.2",
       "author": {
         "name": "shuymn"

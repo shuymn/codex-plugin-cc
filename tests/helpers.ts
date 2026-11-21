@@ -6,7 +6,8 @@ import { after } from "node:test";
 
 export const ROOT = path.resolve(import.meta.dirname, "..");
 export const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
-export const ADAPTER = path.join(PLUGIN_ROOT, "scripts", "codex.ts");
+export const RUNNER = path.join(PLUGIN_ROOT, "scripts", "codex-run.ts");
+export const WRAPPER = path.join(PLUGIN_ROOT, "bin", "codex-run");
 const FAKE_CODEX = path.join(ROOT, "tests", "fixtures", "fake-codex.ts");
 
 // Standard system directories; they hold no codex.
@@ -41,8 +42,10 @@ function findOnPath(command: string): string {
 export type FakeEnv = {
   env: NodeJS.ProcessEnv;
   home: string;
-  dataDir: string;
-  logPath: string;
+  // <XDG_STATE_HOME>/codex-plugin-cc, the runner's state directory.
+  stateDir: string;
+  // The runner's TMPDIR.
+  tmp: string;
   readLog: () => FakeCall[];
 };
 
@@ -52,14 +55,14 @@ export type FakeCall = {
   scenario: string;
   pid: number;
   ignored?: boolean;
-  completed?: string;
   launcher?: boolean;
-  childPid?: number;
   stdin?: string | null;
   rejected?: string;
   signal?: string;
-  rpc?: { id?: number | string; method?: string; error?: { code: number } };
-  appServerClosed?: boolean;
+  // Codex's environment: TMPDIR and every GIT_ variable it received.
+  env?: Record<string, string>;
+  // The file the fake wrote into $TMPDIR, with FAKE_CODEX_PROBE=1.
+  probe?: string;
 };
 
 export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}): FakeEnv {
@@ -67,11 +70,13 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
   const tools = path.join(base, "tools");
   const fakeBin = path.join(base, "fake-bin");
   const home = path.join(base, "home");
-  const dataDir = path.join(base, "plugin-data");
+  const stateHome = path.join(base, "state");
+  const tmp = path.join(base, "tmp");
   const logPath = path.join(base, "codex-calls.jsonl");
   fs.mkdirSync(tools);
   fs.mkdirSync(fakeBin);
   fs.mkdirSync(home);
+  fs.mkdirSync(tmp);
   fs.symlinkSync(process.execPath, path.join(tools, "node"));
   fs.symlinkSync(findOnPath("git"), path.join(tools, "git"));
   fs.writeFileSync(path.join(fakeBin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${FAKE_CODEX}" "$@"\n`, {
@@ -80,14 +85,17 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
 
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!/^(CLAUDE|CODEX|FAKE_CODEX|GIT_)/.test(key) && key !== "HOME" && key !== "PATH") {
+    if (!/^(CLAUDE|CODEX|FAKE_CODEX|GIT_|XDG_)/.test(key) && !["HOME", "PATH", "TMPDIR"].includes(key)) {
       env[key] = value;
     }
   }
   Object.assign(env, {
     HOME: home,
     PATH: [...(options.codex === false ? [] : [fakeBin]), tools, ...SYSTEM_PATH].join(path.delimiter),
-    CLAUDE_PLUGIN_DATA: dataDir,
+    // Every runner the tests start keeps its state here, never in the developer's.
+    XDG_STATE_HOME: stateHome,
+    // The runner's scratch and snapshot directories go here, where tests can see them.
+    TMPDIR: tmp,
     CODEX_HOME: path.join(home, ".codex"),
     FAKE_CODEX_LOG: logPath,
     FAKE_CODEX_SCENARIO: options.scenario ?? "ok",
@@ -103,13 +111,12 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
   return {
     env,
     home,
-    dataDir,
-    logPath,
+    stateDir: path.join(stateHome, "codex-plugin-cc"),
+    tmp,
     readLog: () =>
       fs.existsSync(logPath)
         ? fs
             .readFileSync(logPath, "utf8")
-            .trim()
             .split("\n")
             .filter(Boolean)
             .map((line) => JSON.parse(line) as FakeCall)
@@ -117,28 +124,40 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
   };
 }
 
-export function runAdapter(
-  subcommand: string,
-  input: string,
+export function runRunner(
+  args: readonly string[],
   options: { env: NodeJS.ProcessEnv; cwd: string },
 ): SpawnSyncReturns<string> {
-  return spawnSync(process.execPath, [ADAPTER, subcommand], {
+  return spawnSync(process.execPath, [RUNNER, ...args], {
     cwd: options.cwd,
     env: options.env,
-    input,
     encoding: "utf8",
     timeout: 60_000,
   });
 }
 
-export function spawnAdapter(subcommand: string, input: string, options: { env: NodeJS.ProcessEnv; cwd: string }) {
-  const child = spawn(process.execPath, [ADAPTER, subcommand], {
+export function spawnRunner(args: readonly string[], options: { env: NodeJS.ProcessEnv; cwd: string }) {
+  return spawn(process.execPath, [RUNNER, ...args], {
     cwd: options.cwd,
     env: options.env,
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdin.end(input);
-  return child;
+}
+
+// Writes a prompt file outside any repository and returns its absolute path.
+export function writePrompt(content: string | Buffer = "go\n"): string {
+  const file = path.join(makeTempDir("codex-plugin-prompt-"), "prompt.md");
+  fs.writeFileSync(file, content);
+  return file;
+}
+
+// The value of a `name: value` line in the runner's stdout.
+export function outputLine(stdout: string, name: string): string | undefined {
+  const prefix = `${name}: `;
+  return stdout
+    .split("\n")
+    .find((line) => line.startsWith(prefix))
+    ?.slice(prefix.length);
 }
 
 export function git(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv): string {
