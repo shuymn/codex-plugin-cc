@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 
@@ -36,6 +37,21 @@ function failingKill(code: string) {
 
 const EXEC_ARGS = ["exec", "-s", "read-only", "-"];
 
+// Waits without yielding to the event loop, so Node cannot reap the process,
+// until it is a zombie.
+function waitForZombieSync(pid: number, timeoutMs = 5_000): void {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+    if (state.startsWith("Z")) {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`process ${pid} did not become a zombie (state "${state}")`);
+    }
+  }
+}
+
 test("a group that cannot be signaled is reported as not reaped, within the bound", { timeout: 30_000 }, async () => {
   const { ready, restore } = useFake("slow");
   try {
@@ -57,6 +73,53 @@ test("a group that cannot be signaled is reported as not reaped, within the boun
     assert.match(exit.reapError ?? "", /EPERM/);
     process.kill(pid, "SIGKILL");
     assert.ok(await waitUntilGone(pid));
+  } finally {
+    restore();
+  }
+});
+
+// Claude Code stops a background task by signaling every descendant, so codex
+// can exit just as the stop ladder starts. On macOS, signaling a group whose
+// only member is an unreaped zombie fails with EPERM.
+test("a group whose leader exited but is not yet reaped is not a reap failure", { timeout: 30_000 }, async () => {
+  const { ready, restore } = useFake("slow");
+  try {
+    const group = spawnCodexGroup(EXEC_ARGS, {
+      cwd: makeTempDir(),
+      interruptGraceMs: 100,
+      terminateGraceMs: 100,
+      reapGraceMs: 300,
+    });
+    group.child.stdin.end("go");
+    const pid = Number(await waitForFile(ready));
+    process.kill(pid, "SIGKILL");
+    waitForZombieSync(pid);
+    group.stop();
+    const exit = await group.exited;
+    assert.equal(exit.exitSignal, "SIGKILL");
+    assert.equal(exit.reapError, null);
+  } finally {
+    restore();
+  }
+});
+
+test("an EPERM that persists after the leader is reaped is a reap failure", { timeout: 30_000 }, async () => {
+  const { ready, restore } = useFake("slow");
+  try {
+    const group = spawnCodexGroup(EXEC_ARGS, {
+      cwd: makeTempDir(),
+      interruptGraceMs: 100,
+      terminateGraceMs: 100,
+      reapGraceMs: 300,
+      kill: failingKill("EPERM"),
+    });
+    group.child.stdin.end("go");
+    const pid = Number(await waitForFile(ready));
+    group.stop();
+    process.kill(pid, "SIGKILL");
+    const exit = await group.exited;
+    assert.equal(exit.exitSignal, "SIGKILL");
+    assert.match(exit.reapError ?? "", /EPERM/);
   } finally {
     restore();
   }
