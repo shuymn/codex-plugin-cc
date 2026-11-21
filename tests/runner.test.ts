@@ -559,3 +559,10 @@ test("a stopped run outside Git reports the interruption, not the missing baseli
   assert.equal(outputLine(stdout, "changes"), "unknown: interrupted");
   assert.equal(readRunLog(fake)[0]?.unknown, "interrupted");
 });
+
+test("a whitespace-only final message is non-empty, so the run succeeds and keeps it unchanged", () => {
+  const { fake, repo } = setup();
+  const result = run(fake, ["--prompt-file", writePrompt(), "--read-only"], repo, { FAKE_CODEX_MESSAGE: " \n" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(fs.readFileSync(outputLine(result.stdout, "result") ?? "", "utf8"), " \n");
+});
