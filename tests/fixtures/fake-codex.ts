@@ -15,7 +15,6 @@ const argv = process.argv.slice(2);
 type ExecCall = {
   sandbox: string | null;
   subcommand: "resume" | null;
-  addDirs: string[];
   outputFile: string | null;
   resumeId: string | null;
 };
@@ -37,12 +36,12 @@ function reject(reason: string): never {
 
 // Options shared by every exec level (global = true in the real CLI).
 const GLOBAL_VALUE_OPTIONS = new Set(["-c", "-m", "-o"]);
-const GLOBAL_FLAGS = new Set(["--json", "--ephemeral", "--skip-git-repo-check"]);
+const GLOBAL_FLAGS = new Set(["--json", "--skip-git-repo-check"]);
 // Options the real CLI accepts only before the subcommand.
 const TOP_LEVEL_VALUE_OPTIONS = new Set(["-s", "--add-dir"]);
 
 function parseExec(args: readonly string[]): ExecCall {
-  const call: ExecCall = { sandbox: null, subcommand: null, addDirs: [], outputFile: null, resumeId: null };
+  const call: ExecCall = { sandbox: null, subcommand: null, outputFile: null, resumeId: null };
   const seen = new Set<string>();
   const positionals: string[] = [];
 
@@ -65,8 +64,9 @@ function parseExec(args: readonly string[]): ExecCall {
       if (call.subcommand !== null) {
         reject(`${arg} after the ${call.subcommand} subcommand`);
       }
+      // --add-dir may repeat; its value is only checked to be there.
       if (arg === "--add-dir") {
-        call.addDirs.push(takeValue());
+        takeValue();
         continue;
       }
       if (seen.has(arg)) {
@@ -273,8 +273,7 @@ async function runExec(call: ExecCall): Promise<void> {
   } else {
     const text = finalText();
     emit({ type: "item.completed", item: { id: "m1", type: "agent_message", text: text.toString("utf8") } });
-    // no-output: a progress message from a turn that never completed, so
-    // Codex writes no -o file.
+    // no-output: an agent message without an -o file.
     if (call.outputFile && scenario !== "no-output") {
       fs.writeFileSync(call.outputFile, text);
     }
@@ -293,7 +292,7 @@ function runLauncher(): void {
     stdio: "inherit",
     env: { ...process.env, FAKE_CODEX_SCENARIO: "ignore-sigint" },
   });
-  log({ launcher: true, childPid: child.pid });
+  log({ launcher: true });
   const forward = (signal: NodeJS.Signals): void => {
     if (!child.killed) {
       child.kill(signal);
@@ -311,22 +310,12 @@ function runLauncher(): void {
   });
 }
 
-async function main(): Promise<void> {
-  // Simulates a slow start, before anything else happens.
-  const startupDelayMs = Number(process.env.FAKE_CODEX_STARTUP_DELAY_MS ?? "0");
-  if (startupDelayMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, startupDelayMs));
-  }
-  if (argv[0] === "exec") {
-    const call = parseExec(argv.slice(1));
-    if (scenario === "launcher") {
-      runLauncher();
-      return;
-    }
-    await runExec(call);
-    return;
-  }
+if (argv[0] !== "exec") {
   reject("unknown command");
 }
-
-await main();
+const call = parseExec(argv.slice(1));
+if (scenario === "launcher") {
+  runLauncher();
+} else {
+  await runExec(call);
+}

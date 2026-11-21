@@ -46,7 +46,6 @@ export type FakeEnv = {
   stateDir: string;
   // The runner's TMPDIR.
   tmp: string;
-  logPath: string;
   readLog: () => FakeCall[];
 };
 
@@ -56,9 +55,7 @@ export type FakeCall = {
   scenario: string;
   pid: number;
   ignored?: boolean;
-  completed?: string;
   launcher?: boolean;
-  childPid?: number;
   stdin?: string | null;
   rejected?: string;
   signal?: string;
@@ -116,12 +113,10 @@ export function makeFakeEnv(options: { codex?: boolean; scenario?: string } = {}
     home,
     stateDir: path.join(stateHome, "codex-plugin-cc"),
     tmp,
-    logPath,
     readLog: () =>
       fs.existsSync(logPath)
         ? fs
             .readFileSync(logPath, "utf8")
-            .trim()
             .split("\n")
             .filter(Boolean)
             .map((line) => JSON.parse(line) as FakeCall)
