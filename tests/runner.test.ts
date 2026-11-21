@@ -646,3 +646,11 @@ test("a whitespace-only final message is non-empty, so the run succeeds and keep
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.readFileSync(outputLine(result.stdout, "result") ?? "", "utf8"), " \n");
 });
+
+test("a directory at the -o path is not a final message", () => {
+  const { fake, repo } = setup("output-dir");
+  const result = run(fake, ["--prompt-file", writePrompt(), "--read-only"], repo);
+  assert.equal(result.status, 1);
+  assert.equal(outputLine(result.stdout, "result"), undefined);
+  assert.match(firstLine(result.stderr), /without a final message/);
+});

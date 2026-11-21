@@ -261,7 +261,12 @@ async function runExec(call: ExecCall): Promise<void> {
     emit({ type: "item.completed", item: { id: "w1", type: "error", message: "under-development feature warning" } });
   }
 
-  if (scenario === "empty-output") {
+  if (scenario === "output-dir") {
+    // A directory, not a file, at the -o path.
+    if (call.outputFile) {
+      fs.mkdirSync(call.outputFile);
+    }
+  } else if (scenario === "empty-output") {
     if (call.outputFile) {
       fs.writeFileSync(call.outputFile, "");
     }

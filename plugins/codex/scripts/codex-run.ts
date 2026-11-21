@@ -192,7 +192,8 @@ function codexArgs(request: Request, scratch: Scratch | null, resultFile: string
 
 function hasFinalMessage(resultFile: string): boolean {
   try {
-    return fs.statSync(resultFile).size > 0;
+    const stat = fs.statSync(resultFile);
+    return stat.isFile() && stat.size > 0;
   } catch {
     return false;
   }
