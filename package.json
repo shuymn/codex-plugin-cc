@@ -2,7 +2,7 @@
   "name": "codex-plugin-cc",
   "version": "2.1.2",
   "private": true,
-  "description": "Use Codex from Claude Code to review code or delegate tasks.",
+  "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {

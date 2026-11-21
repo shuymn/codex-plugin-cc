@@ -1,22 +1,12 @@
 # Codex plugin for Claude Code
 
-Use Codex from inside Claude Code to review code or to hand tasks to Codex.
-
-The plugin is a thin adapter over your local Codex CLI. `/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` each run `codex exec` once with an explicit sandbox, and Claude Code's own background execution handles long runs and tells you when they finish. `/codex:transfer` uses the Codex app server, and `/codex:setup` only checks the CLI.
-
-## What You Get
-
-- `/codex:review` for Codex's built-in read-only review
-- `/codex:adversarial-review` for a steerable read-only review that challenges the change and its design
-- `/codex:rescue` to hand a task to Codex, and to continue a Codex thread from the same Claude session
-- `/codex:transfer` to continue the current Claude session in Codex
-- `/codex:setup` to check the Codex CLI and to turn the optional stop-time review gate on or off
+`codex-run` is a role-free executable in the plugin's `bin/` directory that Claude Code adds to the Bash tool's `PATH`. It runs one `codex exec` turn from a prompt file in a chosen working directory, writes Codex's final message unchanged to a per-run file, and prints a short summary report to stdout including any working-tree changes. The caller—typically an orchestrating Claude Code session—owns the role, prompt structure, and what to do with the result.
 
 ## Requirements
 
-- **The Codex CLI**, installed and logged in. Install it with `npm install -g @openai/codex`, then run `codex login`. Codex usage counts toward your ChatGPT plan or API key limits.
-- **Node.js 24 or later.** The plugin is written in TypeScript and runs through Node's built-in type stripping. It has no runtime dependencies.
-- **Git 2.45 or later** for the stop-time review gate. `/codex:setup` warns when Git is older.
+- **Node.js 24 or later.** The runner is written in TypeScript and uses Node's built-in type stripping, with no runtime dependencies.
+- **Codex CLI**, on `PATH` and logged in. Install it with `npm install -g @openai/codex`, then run `codex login`. Codex usage counts toward your ChatGPT plan or API key limits.
+- **Git 2.45 or later** for the working-tree change report (uses `--no-lazy-fetch`; older Git versions report `changes: unknown: ...`).
 
 ## Install
 
@@ -38,130 +28,170 @@ Reload plugins:
 /reload-plugins
 ```
 
-Then run:
+Verify that `codex-run` is on the Bash tool's `PATH`:
 
 ```bash
-/codex:setup
+codex-run --help
 ```
 
-`/codex:setup` reports the Codex version, whether Codex is logged in, and the review gate state. It does not install Codex or log in for you. If Codex is not logged in, run:
-
-```bash
-!codex login
-```
+If Codex is not logged in yet, run `codex login`.
 
 ## Usage
 
-Every command reads its options first and treats the rest as text. Put options before the text, and put text that starts with `-` after `--`. An unknown leading option is an error, not text. `--help` shows a command's options.
-
-`/codex:review`, `/codex:adversarial-review`, and `/codex:rescue` run in the background by default, and Claude tells you when they finish. Add `--wait` to run them in the foreground instead; `--background` states the default. `/codex:setup` and `/codex:transfer` always run in the foreground.
-
-### `/codex:review`
-
-Runs Codex's built-in review (`codex exec review`) in a read-only sandbox. It reviews the uncommitted changes, including untracked files. When there are none, it reviews the current branch against the default branch. Use `--base <ref>` to pick the base yourself.
+Minimal call:
 
 ```bash
-/codex:review
-/codex:review --wait
-/codex:review --base main --effort high
+codex-run --prompt-file /abs/path/to/prompt.md --cwd /path/to/repo
 ```
 
-It takes no focus text. Use `/codex:adversarial-review` for that.
-
-### `/codex:adversarial-review`
-
-Runs a read-only review that looks for the strongest reasons the change should not ship: design choices, hidden assumptions, failure modes, and tradeoffs, not only defects. It picks the same target as `/codex:review`, and any text after the options is the focus.
-
-```bash
-/codex:adversarial-review
-/codex:adversarial-review --base main challenge the caching and retry design
-/codex:adversarial-review --wait look for race conditions
-```
-
-The plugin checks the output against its review schema and lists the findings by severity.
-
-### `/codex:rescue`
-
-Hands a task to Codex. Codex may edit files in the workspace (`workspace-write` sandbox) unless you pass `--read-only`. The task text reaches Codex exactly as written, including newlines, quotes, and words like `--write`.
-
-```bash
-/codex:rescue investigate why the tests started failing
-/codex:rescue --read-only explain how the session store handles concurrent writes
-/codex:rescue --cwd ../other-worktree fix the failing lint check
-/codex:rescue --effort high investigate the flaky integration test
-```
-
-Claude can also call it on its own when it is stuck or wants a second opinion, and you can ask Claude to delegate something to Codex.
-
-When a task finishes, the plugin prints the Codex thread ID and how to continue:
+### Options
 
 ```text
----
-Codex thread: <id>  (sandbox: workspace-write, cwd: /path/to/repo, workspace: /path/to/repo)
-Continue: /codex:rescue --thread <id> <follow-up>   |  Terminal: codex resume <id>
+codex-run --prompt-file <absolute file> [--cwd <dir>] [--read-only] [--thread <id>]
+          [--model <model>] [--effort <effort>]
+codex-run --help
 ```
 
-- `--resume` continues the latest Codex thread this Claude session started.
-- `--thread <id>` continues a specific thread this Claude session started. Use it when several tasks ran in parallel.
-- Either way, the thread must belong to the same repository as the current run. It can continue in another worktree of that repository, for example after the work moved into one.
-- `--prompt-file <file>` reads the task text from a file instead.
-- `--model` and `--effort` go to Codex unchanged, and Codex checks the values.
+- `--prompt-file <file>`: Required. Must be an absolute path to a readable, non-blank file. Its bytes are sent to Codex on stdin unchanged.
+- `--cwd <dir>`: Codex's working directory. Default: the current directory. Must exist and be a directory.
+- `--read-only`: Run Codex in the `read-only` sandbox instead of the default `workspace-write`.
+- `--thread <id>`: Continue a thread started by `codex-run` in the same repository.
+- `--model <model>`: Pass `-m <model>` to Codex unchanged.
+- `--effort <effort>`: Pass `-c model_reasoning_effort=<effort>` to Codex unchanged.
+- `--help`: Show usage and exit `0`.
 
-### `/codex:transfer`
+Options are parsed strictly as long options only; there are no short options and no positional arguments. Repeating an option keeps its last value.
 
-Imports the current Claude Code session into a Codex thread and prints a `codex resume <session-id>` command, so you can continue the same conversation in Codex.
+### Stdout report
 
-```bash
-/codex:transfer
-/codex:transfer --source ~/.claude/projects/-Users-me-repo/<session-id>.jsonl
+```text
+run: 20260101T000000Z-a1b2c3d4
+scratch: /tmp/codex-run-scratch-xxxxxx
+thread: 0195f3a2-7c00-7000-8000-000000000000
+status: ok (exit 0)
+result: <state>/runs/20260101T000000Z-a1b2c3d4/result.md
+sandbox: workspace-write  cwd: /path/to/repo
+changes: none
 ```
 
-The plugin's `SessionStart` hook supplies the current transcript path, and `--source` overrides it. The source must be a `.jsonl` file under `~/.claude/projects`. The imported thread's working directory comes from the transcript; `--cwd` only sets the directory the Codex app server starts in. Older Codex versions without session import must be updated first.
+- `run: <id>`: Always printed first. Format is `<UTC timestamp>-<8 hex chars>`.
+- `scratch: <dir>`: Write-capable runs only, printed before Codex starts. Names the temporary directory passed to Codex as `TMPDIR` and `--add-dir`.
+- `thread: <id>`: Printed as soon as Codex reports `thread.started`. Omitted if Codex exits before reporting a thread.
+- `status: ok|failed|interrupted (exit <n>)`: Final status (`ok` for exit `0`, `interrupted` for exit `> 128`, `failed` otherwise) and exit code.
+- `result: <file>`: Printed on exit `0` only. Path to `result.md` in the run directory.
+- `sandbox: <mode>  cwd: <dir>`: Effective sandbox (`workspace-write` or `read-only`) and resolved `--cwd`.
+- `changes: ...`: Working-tree change report (see [Change report](#change-report)).
+- `scratch left: <dir>`: Printed only when a scratch directory was created and was not deleted (deletion failed, or deletion was skipped because Codex's process group could not be confirmed gone).
 
-### `/codex:setup`
+Output without a `status:` line, or a write-capable run without a `changes:` line, is incomplete. Backslashes and control characters in printed paths and messages are escaped (`\\`, `\n`, `\t`, `\xNN`) so each line stays on one line.
 
-Checks whether Codex is installed and logged in, and turns the review gate on or off for the current workspace. Because it is a diagnostic, it exits 0 and reports problems such as a missing or logged-out Codex as next steps, unlike the other commands, which exit 3 when `codex` is not found.
+On failure, stderr prints `codex-run: <one-line summary>` followed by up to 40 cleaned lines of Codex's stderr.
 
-```bash
-/codex:setup
-/codex:setup --enable-review-gate
-/codex:setup --disable-review-gate
+### Result file
+
+Codex writes its final assistant message via `-o` to `<state>/runs/<run id>/result.md`. `codex-run` does not modify or reformat the file. Each run gets its own private directory (`0700`), so concurrent runs do not overwrite each other's output.
+
+If Codex exits `0` without writing a non-empty `result.md`, `codex-run` exits `1` and omits `result:`.
+
+Run directories older than 7 days (by modification time) are pruned automatically on subsequent runs.
+
+### Threads
+
+When Codex reports `thread.started`, `codex-run` writes `<state>/threads/<thread id>.json` containing `{cwd, repo, updatedAt}`, where `cwd` is the canonical workspace root and `repo` is the canonical Git common directory (`null` outside Git).
+
+`--thread <id>` is accepted only when `<id>` matches `^[A-Za-z0-9-]{1,128}$`, a record exists in the thread store, and:
+
+- **Inside Git:** the current `--cwd` shares the same Git common directory (`repo`). Any worktree of that repository matches; a Git record never matches by path alone.
+- **Outside Git:** the current `--cwd` is also outside Git and has the exact same canonical path.
+
+Otherwise `codex-run` exits `2` before starting Codex, naming the recorded location and suggesting `codex resume <id>` in a terminal.
+
+Thread records are not scoped to a Claude Code session. Concurrent runs on the same thread are not guarded; keep rounds of a thread sequential.
+
+### Sandbox and Codex configuration
+
+The default sandbox is `workspace-write`, allowing Codex to run probe scripts, tests, and file edits inside the workspace. Pass `--read-only` to run Codex in the `read-only` sandbox; read-only runs skip working-tree snapshots and do not create a scratch directory.
+
+`codex-run` uses the `codex` binary on `PATH` and Codex's own configuration (`~/.codex/config.toml` and trusted project-level `.codex/config.toml`). Every run passes `-c approval_policy="never"`, `-c approvals_reviewer="user"`, and `--skip-git-repo-check`. `--model` and `--effort` are forwarded only when specified.
+
+Repository-selection Git environment variables (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`) are stripped from both the runner's Git calls and Codex's environment so Git resolves the repository from `--cwd`.
+
+### Change report
+
+On write-capable runs, `codex-run` snapshots the workspace root of `--cwd` as a Git tree in a temporary index before Codex starts and again after its process group exits, then compares the two trees with `git diff-tree -r -z --no-renames --name-status`. Snapshots do not touch the user's index, refs, or working tree, and disable hooks, fsmonitor, untracked cache, lazy fetch, and filter drivers.
+
+Possible `changes:` values:
+
+- `none`: The baseline and final snapshots are equal as Git stores them.
+- `<n> files (baseline <tree>, paths relative to <workspace root>)`: Lists up to 10 changed paths as `  <status> <path>` (`A`, `M`, `D`, `T`, etc.). When more than 10 files changed, the full list (`baseline <tree>`, `final <tree>`, then `<status>\t<path>` lines) is written to `<state>/runs/<run id>/changes.txt` and referenced as `  ... full list: <file>`.
+- `unknown: <reason>` (with `(baseline <tree>)` when a baseline exists): The workspace is outside Git, a snapshot or diff failed (for example Git older than 2.45, submodules, files with a Git `filter` attribute, or a 30-second snapshot timeout), the run was interrupted by a signal, or Codex's process group could not be confirmed gone.
+- `not checked: read-only`: The run used `--read-only`.
+
+The change report never changes the exit code.
+
+Limits:
+
+- Reports all working-tree changes that occurred **during** the run, including edits made by other processes in the same working tree. Run at most one write-capable `codex-run` per working tree at a time; concurrent runs in separate worktrees are isolated.
+- Changes made and reverted before Codex exits report `none`.
+- Byte changes hidden by Git normalization on `git add` (such as line endings under `core.autocrlf`) report `none`.
+- Ignored files, `.git` contents, and files outside the working tree are not covered.
+- Repositories with submodules (or embedded repositories) and files with a Git `filter` attribute (such as Git LFS) produce `unknown: <reason>`.
+- Snapshot trees are unreferenced Git objects that `git gc` prunes after its expiry period.
+
+### Scratch directory and `TMPDIR`
+
+On write-capable runs, after taking the baseline snapshot, `codex-run` creates a temporary directory (`codex-run-scratch-*` under the system temporary directory), passes it to Codex via `--add-dir` and `TMPDIR`, and prints `scratch: <dir>`.
+
+After Codex's process group exits, `codex-run` deletes the directory after verifying its device and inode still match what was created. If deletion fails, or if Codex's process group could not be confirmed gone (so Codex may still be using it), the directory is left in place and reported as `scratch left: <dir>`.
+
+Limit: Codex's `shell_environment_policy` controls the environment of its shell tool and may drop or override `TMPDIR`.
+
+### Exit codes
+
+| Code    | Meaning                                                                                                                                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`     | Codex finished the turn with a non-empty final message.                                                                                                                                                             |
+| `1`     | Codex failed, finished without a final message, a Git lookup failed before starting, the thread record could not be written, or Codex's process group could not be confirmed gone (takes precedence over a signal). |
+| `2`     | Usage error (missing, relative, unreadable, or blank `--prompt-file`; invalid `--cwd`; unknown option; positional argument) or refused `--thread`. Codex was not started.                                           |
+| `3`     | `codex` was not found on `PATH`.                                                                                                                                                                                    |
+| `128+n` | Stopped by signal `n` (`130` for `SIGINT`, `143` for `SIGTERM`).                                                                                                                                                    |
+
+### Running in the background
+
+`codex-run` runs in the foreground of its own process. For long runs, use Claude Code's Bash tool background mode (`run_in_background`); stdout stays short so the completion notification is concise.
+
+When stopped with `SIGINT` or `SIGTERM`, `codex-run` terminates Codex's entire process group in stages (`SIGINT`, `SIGTERM`, `SIGKILL`), reports `changes: unknown: interrupted` (with the baseline tree id if taken), deletes the scratch directory, and exits `128+n`. If the process group cannot be confirmed gone, it exits `1` and leaves the scratch directory (`scratch left: <dir>`).
+
+### State directory and run log
+
+`<state>` is `$XDG_STATE_HOME/codex-plugin-cc`, or `~/.local/state/codex-plugin-cc` when `XDG_STATE_HOME` is unset, empty, or relative.
+
+```text
+<state>/
+  runs/<run id>/result.md     # Codex's -o output (pruned after 7 days)
+  runs/<run id>/changes.txt   # Written only when more than 10 files changed
+  threads/<thread id>.json    # {cwd, repo, updatedAt}
+  runs.jsonl                  # One metadata JSON line per run
 ```
 
-When the review gate is on, a `Stop` hook asks Codex for a read-only review of what changed in the working tree before Claude stops:
+Each run that prints `run: <id>` appends one JSON line to `<state>/runs.jsonl` with:
 
-- The hook snapshots the working tree (tracked, untracked, and deleted files; ignored files do not count) as a Git tree without touching your index, refs, or files. If the snapshot matches the one Codex last allowed, Claude stops without a review.
-- Otherwise Codex reviews the difference from the last allowed snapshot. Before the first allow in a session, the difference is measured from the commit the session started on (for the workspace Claude Code started in), so commits Claude made also get reviewed. Without such a record, for example in another workspace, it is measured from `HEAD`, and the hook tells you that earlier commits were not reviewed.
-- Codex answers with a structured verdict. It blocks only for problems tied to a file and line, and the hook passes those findings back to Claude. After three blocks with findings in a row, if the fourth review also blocks, the hook lets Claude stop and shows those findings to you; run `/codex:review` yourself then.
-- If the review fails, times out, or returns an invalid verdict, the hook blocks the stop without counting it toward that limit. Stop again to retry, or turn the gate off with `/codex:setup --disable-review-gate`.
-- If the working tree changes while Codex is reviewing it, for example because a background task is still writing, the hook blocks the stop and asks Claude to stop again once the writes are done.
-- Outside a Git repository, in a repository with submodules, and in a repository where some files use a Git filter such as Git LFS, there is no snapshot. Codex then reviews the working tree against the baseline described above, plus untracked files, on every stop, and the hook tells you why; outside Git, Codex reviews what Claude's final message describes. Such a review is never recorded as approved.
-- If Codex is not installed, the hook skips the review, shows a note, and lets Claude stop.
+- `run` (run id), `time` (ISO-8601 UTC start time), `sandbox`, `continued` (boolean), `exit`, `durationMs`
+- `changes` (changed-file count, or `null` when `read-only` or `unknown`)
+- `unknown` (present when `changes:` is `unknown`: `not-git`, `snapshot-failed`, `interrupted`, or `reap-error`)
+- `snapshotMs` (present on write-capable runs: `{ baseline, final? }`)
 
-The gate does not review the contents of `.git` (such as its config and hooks) or files ignored by `.gitignore`.
+`runs.jsonl` does **not** record prompts, results, file paths, or raw error text.
 
-The snapshots add unreferenced objects to the repository, which `git gc` removes.
+## Permissions
 
-> [!WARNING]
-> The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to watch the session.
+Add a Claude Code Bash permission rule to allow `codex-run` across plugin updates without referencing versioned cache paths:
 
-## Codex Configuration
-
-The plugin uses the `codex` binary on your `PATH` and the same configuration as running Codex directly: `~/.codex/config.toml` and trusted project-level `.codex/config.toml` files. For example, to use high reasoning effort by default:
-
-```toml
-model_reasoning_effort = "high"
+```text
+Bash(codex-run:*)
 ```
-
-The plugin always sets the sandbox and runs Codex with `approval_policy = "never"`, so a run never waits for an approval prompt.
-
-## Moving Work Over To Codex
-
-Tasks, reviews, and transfers run as regular Codex threads. Tasks and transfers print the thread ID to pass to `codex resume <id>`. For a review, pick its thread from the list that `codex resume` shows.
 
 ## Development
-
-The plugin stays thin on purpose: reimplementing what the Codex CLI and Claude Code already provide, such as job management and background execution, was where the bugs came from. The design prefers to enforce permissions, decisions that belong to the user, and handoffs between the two models in code and schemas, and leaves how to investigate and solve a task to the models.
 
 The tools are pinned in `mise.toml`. After cloning, run `mise install`, then `pnpm install` and `pnpm exec lefthook install` to set up the dependencies and git hooks.
 
