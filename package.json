@@ -1,6 +1,6 @@
 {
   "name": "codex-plugin-cc",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
   "license": "Apache-2.0",

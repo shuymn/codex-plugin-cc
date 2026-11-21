@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.1
+
+Fixes:
+
+- Fixed write-capable runs in a repository with `core.splitIndex=true` writing a new `sharedindex.*` file into the repository's `.git` directory on every snapshot.
+- Documented two change-report limits: edits to an ignored file that was added with `git add -f` but is absent from `HEAD` report `none`, and sparse checkouts are untested.
+
 ## 3.0.0
 
 Replaced the built-in role commands, hooks, and skills with a single role-free executable, `codex-run`, in `plugins/codex/bin/` (added to the Bash tool's `PATH` by Claude Code). The caller writes the role and instructions in the prompt file.
