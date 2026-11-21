@@ -134,7 +134,8 @@ Limits:
 - Reports all working-tree changes that occurred **during** the run, including edits made by other processes in the same working tree. Run at most one write-capable `codex-run` per working tree at a time; concurrent runs in separate worktrees are isolated.
 - Changes made and reverted before Codex exits report `none`.
 - Byte changes hidden by Git normalization on `git add` (such as line endings under `core.autocrlf`) report `none`.
-- Ignored files, `.git` contents, and files outside the working tree are not covered.
+- Ignored files, `.git` contents, and files outside the working tree are not covered. This includes a file that matches an ignore rule and was tracked with `git add -f` but is not in `HEAD`: its edits report `none`, because the temporary index starts from `HEAD` and `git add -A` skips ignored paths.
+- Sparse checkouts are untested.
 - Repositories with submodules (or embedded repositories) and files with a Git `filter` attribute (such as Git LFS) produce `unknown: <reason>`.
 - Snapshot trees are unreferenced Git objects that `git gc` prunes after its expiry period.
 

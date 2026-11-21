@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+import { compareTrees } from "../plugins/codex/scripts/lib/changes.ts";
 import { isTreeId, type Snapshot, takeSnapshot } from "../plugins/codex/scripts/lib/snapshot.ts";
 import { git, makeFakeEnv, makeRepo, makeTempDir } from "./helpers.ts";
 
@@ -120,6 +121,39 @@ test("taking a snapshot leaves the index, refs, and working tree untouched", () 
     }
   }
   assert.deepEqual(state(), before);
+});
+
+test("with core.splitIndex the snapshots write no shared index into .git", () => {
+  const repo = makeTempDir("codex-plugin-repo-");
+  git(repo, ["init", "-q", "-b", "main"], fake.env);
+  git(repo, ["config", "core.splitIndex", "true"], fake.env);
+  git(repo, ["config", "splitIndex.maxPercentChange", "0"], fake.env);
+  write(repo, "README.md", "hello\n");
+  git(repo, ["add", "README.md"], fake.env);
+  git(repo, ["commit", "-q", "-m", "initial"], fake.env);
+
+  const gitDir = path.join(repo, ".git");
+  // Contents, not mtimes: any read of a split index refreshes the shared
+  // index's mtime, which only delays its expiry.
+  const state = () => {
+    const entries = fs.readdirSync(gitDir).toSorted();
+    const shared = entries.filter((entry) => entry.startsWith("sharedindex."));
+    return { entries, shared: shared.map((entry) => fs.readFileSync(path.join(gitDir, entry)).toString("base64")) };
+  };
+  const before = state();
+  // Otherwise the test could not tell a new shared index from none at all.
+  assert.equal(before.shared.length, 1, before.entries.join(" "));
+
+  const baseline = treeOf(takeSnapshot(repo));
+  write(repo, "README.md", "edited\n");
+  const final = treeOf(takeSnapshot(repo));
+  assert.deepEqual(state(), before);
+  assert.deepEqual(compareTrees(repo, baseline, final), {
+    kind: "changes",
+    baseline,
+    final,
+    entries: [{ status: "M", path: "README.md" }],
+  });
 });
 
 test("files with a Git filter make the snapshot fail without running the filter", () => {
