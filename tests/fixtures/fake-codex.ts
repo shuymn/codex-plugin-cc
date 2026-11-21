@@ -233,7 +233,9 @@ async function runExec(call: ExecCall): Promise<void> {
   emit({ type: "thread.started", thread_id: threadId });
   emit({ type: "turn.started" });
   if (scenario === "exit-nonzero") {
-    process.stderr.write("WARNING: proceeding, even though we could not update PATH: noise\nlog line\nERROR: boom\n");
+    process.stderr.write(
+      "WARNING: proceeding, even though we could not create PATH aliases: noise\nlog line\nERROR: boom\n",
+    );
     process.exit(1);
   }
   if (scenario === "turn-failed") {

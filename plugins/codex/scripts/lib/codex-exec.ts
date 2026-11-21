@@ -55,11 +55,16 @@ export function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (SIGNAL_NUMBERS[signal] ?? 15);
 }
 
+// The CLI's notice that it could not set up its PATH helpers (0.169.0 words
+// it "create PATH aliases", earlier versions "update PATH"); never the reason
+// for a failure.
+const PATH_WARNING = /^WARNING: proceeding, even though we could not (?:update PATH|create PATH aliases):/;
+
 export function cleanCodexStderr(stderr: string): string {
   return stderr
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
-    .filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:"))
+    .filter((line) => line && !PATH_WARNING.test(line))
     .slice(-STDERR_TAIL_LINES)
     .join("\n");
 }
