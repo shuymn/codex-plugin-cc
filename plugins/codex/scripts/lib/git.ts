@@ -5,12 +5,40 @@ import path from "node:path";
 // status is null when git could not run, was killed, or hit the timeout.
 export type GitResult = { status: number | null; stdout: string; stderr: string };
 
-export type GitOptions = { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number };
+// env: variables set on purpose for this call, applied over gitEnv(). Never
+// pass a spread of process.env, which would bring back the variables gitEnv()
+// removes.
+export type GitOptions = { env?: Record<string, string>; input?: string; timeoutMs?: number };
 
 // Large enough for `git ls-files -z` of a big repository.
 const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
 // No git call may hang a hook or command forever.
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
+
+// Variables that choose the repository, index, or object store instead of
+// letting Git find them from the working directory. A caller that runs inside
+// another repository's hook or `git -C` context can inherit them, and they
+// would then point every call, and Codex, at that repository instead of --cwd.
+// Variables that only limit discovery, such as GIT_CEILING_DIRECTORIES, stay.
+export const REPOSITORY_SELECTION_VARIABLES: readonly string[] = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+// This process's environment without the repository-selection variables, so
+// Git resolves the repository from the directory it runs in. process.env
+// itself is never changed.
+export function gitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of REPOSITORY_SELECTION_VARIABLES) {
+    delete env[name];
+  }
+  return env;
+}
 
 // Repository-derived values only ever go to git as argv, never through a shell.
 export function git(cwd: string, args: readonly string[], options: GitOptions = {}): GitResult {
@@ -20,7 +48,7 @@ export function git(cwd: string, args: readonly string[], options: GitOptions = 
     shell: false,
     stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     maxBuffer: MAX_GIT_OUTPUT,
-    ...(options.env === undefined ? {} : { env: options.env }),
+    env: { ...gitEnv(), ...options.env },
     ...(options.input === undefined ? {} : { input: options.input }),
     timeout: options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
   });
@@ -49,7 +77,7 @@ export function isNotGitRepository(result: GitResult): boolean {
 // is outside a repository; any other failure throws GitError.
 function revParse(cwd: string, flags: readonly string[]): string | null {
   const args = ["rev-parse", ...flags];
-  const result = git(cwd, args, { env: { ...process.env, ...C_LOCALE_ENV } });
+  const result = git(cwd, args, { env: C_LOCALE_ENV });
   if (result.status !== 0) {
     if (isNotGitRepository(result)) {
       return null;

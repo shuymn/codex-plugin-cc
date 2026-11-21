@@ -325,3 +325,25 @@ test("treeExists and isTreeId", () => {
   assert.equal(isTreeId("ABCDEF0123456789abcdef0123456789abcdef01"), false);
   assert.equal(isTreeId("a".repeat(64)), true);
 });
+
+test("inherited GIT_DIR and GIT_WORK_TREE do not redirect the snapshot away from its directory", () => {
+  const repo = makeRepo(fake.env);
+  const other = makeRepo(fake.env);
+  write(other, "other.txt", "other\n");
+  write(repo, "mine.txt", "mine\n");
+  const expected = treeOf(takeSnapshot(repo));
+  const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  process.env.GIT_DIR = path.join(other, ".git");
+  process.env.GIT_WORK_TREE = other;
+  try {
+    assert.equal(treeOf(takeSnapshot(repo)), expected);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});

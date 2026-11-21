@@ -52,12 +52,12 @@ export function isTreeId(value: unknown): value is string {
 function safeGit(
   root: string,
   args: readonly string[],
-  options: { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number } = {},
+  options: { env?: Record<string, string>; input?: string; timeoutMs?: number } = {},
 ) {
   return git(root, ["--no-lazy-fetch", ...SAFE_CONFIG, ...args], {
     timeoutMs: SNAPSHOT_TIMEOUT_MS,
     ...options,
-    env: { ...process.env, ...SAFE_ENV, ...options.env },
+    env: { ...SAFE_ENV, ...options.env },
   });
 }
 
