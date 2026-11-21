@@ -15,8 +15,9 @@ while [ -L "$self" ]; do
   link=$(readlink "$self")
   case $link in
     /*) self=$link ;;
-    *) self=$(dirname "$self")/$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
   esac
 done
-root=$(cd -P "$(dirname "$self")/.." && pwd)
+# An empty CDPATH: with one exported, cd would search it and print the directory.
+root=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd)
 exec node "$root/scripts/codex-run.ts" "$@"

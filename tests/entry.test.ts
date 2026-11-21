@@ -49,3 +49,18 @@ test("the shipped wrapper starts the runner", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^Usage: codex-run /);
 });
+
+test("an exported CDPATH does not change where the wrapper finds the runner", () => {
+  const fake = makeFakeEnv();
+  const root = fakePlugin();
+  const parent = path.dirname(root);
+  // A relative symlink next to the plugin, and CDPATH entries that `cd` would search.
+  fs.symlinkSync(path.join("plugin", "bin", "codex-run"), path.join(parent, "codex-run"));
+  const env = { ...fake.env, CDPATH: `.:${parent}:${path.join(root, "bin")}` };
+  for (const entry of ["plugin/bin/codex-run", "./codex-run"]) {
+    const result = spawnSync(entry, ["--help"], { env, cwd: parent, encoding: "utf8" });
+    assert.equal(result.status, 0, `${entry}: ${result.stderr}`);
+    const ran = JSON.parse(result.stdout) as { file: string };
+    assert.equal(ran.file, path.join(fs.realpathSync(root), "scripts", "codex-run.ts"));
+  }
+});
