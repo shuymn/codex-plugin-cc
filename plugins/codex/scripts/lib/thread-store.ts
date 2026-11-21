@@ -1,104 +1,85 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { UsageError } from "./args.ts";
-import { pluginDataDir, writeFileAtomic } from "./env.ts";
+import { stateDir, writeFileAtomic } from "./env.ts";
 import { canonicalWorkspaceRoot } from "./git.ts";
 import { isRecord } from "./json.ts";
 
-// Maps a Claude session to the Codex threads it started:
-//   threads/<sessionId>/<threadId>.json  {cwd, repo, updatedAt}
-//   threads/<sessionId>/latest           <threadId>
-// One file per thread, so parallel tasks in one session never drop each
-// other's records; the last writer of `latest` wins. `repo` is the common Git
-// directory, so a thread can move between worktrees of one repository; it is
-// null outside Git.
+// The Codex threads codex-run started, one file per thread:
+//   <state>/threads/<threadId>.json  {cwd, repo, updatedAt}
+// cwd is the canonical workspace root of the latest run on the thread, and
+// repo the real path of its common Git directory, or null outside Git. One
+// file per thread, written atomically, so parallel runs never drop each
+// other's records.
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
-const LATEST_FILE = "latest";
 
 type ThreadRecord = { cwd: string; repo: string | null; updatedAt: string };
 
-function sessionDir(sessionId: string): string {
-  return path.join(pluginDataDir(), "threads", sessionId);
+// A --thread that may not be continued here; the message says why and what to
+// do instead.
+export class ThreadRefusedError extends Error {
+  override name = "ThreadRefusedError";
+}
+
+function recordPath(threadId: string): string {
+  return path.join(stateDir(), "threads", `${threadId}.json`);
 }
 
 function isValidThreadId(threadId: string): boolean {
   return THREAD_ID_PATTERN.test(threadId);
 }
 
-// `repo` is the common Git directory of the workspace, or null outside Git.
-export function recordThread(sessionId: string, threadId: string, workspaceRoot: string, repo: string | null): boolean {
+// Writes nothing when the id is not safe as a file name. Throws when the
+// record cannot be written.
+export function recordThread(threadId: string, workspaceRoot: string, repo: string | null): void {
   if (!isValidThreadId(threadId)) {
-    return false;
+    return;
   }
-  const dir = sessionDir(sessionId);
   const record: ThreadRecord = {
     cwd: canonicalWorkspaceRoot(workspaceRoot),
     repo,
     updatedAt: new Date().toISOString(),
   };
-  writeFileAtomic(path.join(dir, `${threadId}.json`), `${JSON.stringify(record)}\n`);
-  writeFileAtomic(path.join(dir, LATEST_FILE), `${threadId}\n`);
-  return true;
+  writeFileAtomic(recordPath(threadId), `${JSON.stringify(record)}\n`);
 }
 
-// Returns where the thread was recorded; updatedAt is written for inspection
-// but not read back.
-function readRecord(sessionId: string, threadId: string): { cwd: string; repo: string | null } | null {
+// updatedAt is written for inspection but not read back.
+function readRecord(threadId: string): { cwd: string; repo: string | null } | null {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(sessionDir(sessionId), `${threadId}.json`), "utf8"));
+    const parsed: unknown = JSON.parse(fs.readFileSync(recordPath(threadId), "utf8"));
     if (isRecord(parsed) && typeof parsed.cwd === "string") {
       return { cwd: parsed.cwd, repo: typeof parsed.repo === "string" ? parsed.repo : null };
     }
   } catch {
-    // A missing or unreadable record means there is nothing to resume.
+    // A missing or unreadable record means there is nothing to continue.
   }
   return null;
 }
 
-function readLatest(sessionId: string): string | null {
-  try {
-    return fs.readFileSync(path.join(sessionDir(sessionId), LATEST_FILE), "utf8").trim() || null;
-  } catch {
-    return null;
+// Checks that `threadId` may be continued in this workspace, or throws
+// ThreadRefusedError. A thread recorded in Git continues in any worktree of
+// the same repository (the same common Git directory) and never matches by
+// path alone; a thread recorded outside Git continues only in the same
+// directory, and only while that directory is still outside Git.
+export function checkThread(threadId: string, workspaceRoot: string, repo: string | null): void {
+  if (!isValidThreadId(threadId)) {
+    throw new ThreadRefusedError(`cannot continue: invalid thread id ${JSON.stringify(threadId)}.`);
   }
-}
-
-// Returns the thread to resume, or throws a UsageError whose message says what
-// to do next. `requested` is the --thread value; without it the latest thread
-// of the session is used, and `repo` is as in recordThread.
-export function resolveResumeThread(
-  sessionId: string | null,
-  workspaceRoot: string,
-  repo: string | null,
-  requested?: string,
-): string {
-  if (sessionId === null) {
-    throw new UsageError(
-      "cannot resume: no Claude session id (CODEX_COMPANION_SESSION_ID). Start a new task, or continue in a terminal with `codex resume`.",
-    );
-  }
-  if (requested !== undefined && !isValidThreadId(requested)) {
-    throw new UsageError(`cannot resume: invalid thread id ${JSON.stringify(requested)}.`);
-  }
-  const threadId = requested ?? readLatest(sessionId);
-  if (threadId === null || !isValidThreadId(threadId)) {
-    throw new UsageError(
-      "cannot resume: this Claude session has no Codex thread yet. Start a new task without --resume.",
-    );
-  }
-  const recorded = readRecord(sessionId, threadId);
+  const recorded = readRecord(threadId);
   if (recorded === null) {
-    throw new UsageError(
-      `cannot resume: thread ${threadId} was not started from this Claude session. Start a new task, or use \`codex resume ${threadId}\` in a terminal.`,
+    throw new ThreadRefusedError(
+      `cannot continue: thread ${threadId} was not started by codex-run. Use \`codex resume ${threadId}\` in a terminal instead.`,
     );
   }
-  const root = canonicalWorkspaceRoot(workspaceRoot);
-  if (recorded.cwd !== root && (recorded.repo === null || recorded.repo !== repo)) {
-    throw new UsageError(
-      `cannot resume: thread ${threadId} belongs to ${recorded.cwd}, and ${root} is not a worktree of the same repository. Pass --cwd ${recorded.cwd} to resume it there.`,
+  const matches =
+    recorded.repo !== null
+      ? recorded.repo === repo
+      : repo === null && recorded.cwd === canonicalWorkspaceRoot(workspaceRoot);
+  if (!matches) {
+    const where = recorded.repo === null ? recorded.cwd : `${recorded.cwd} (repository ${recorded.repo})`;
+    throw new ThreadRefusedError(
+      `cannot continue: thread ${threadId} belongs to ${where}, outside this repository. Pass a --cwd in that repository, or use \`codex resume ${threadId}\` in a terminal.`,
     );
   }
-  return threadId;
 }

@@ -1,7 +1,7 @@
 {
   "name": "codex",
   "version": "2.1.2",
-  "description": "Use Codex from Claude Code to review code or delegate tasks.",
+  "description": "Run Codex CLI turns from Claude Code with a role-free executable.",
   "author": {
     "name": "shuymn"
   }

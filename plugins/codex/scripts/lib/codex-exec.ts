@@ -1,15 +1,7 @@
-import { spawnSync } from "node:child_process";
 import readline from "node:readline";
 
 import { isRecord, type JsonObject } from "./json.ts";
-import {
-  CodexNotFoundError,
-  type GroupExit,
-  pickStopTiming,
-  ReapError,
-  spawnCodexGroup,
-  type StopTiming,
-} from "./process-group.ts";
+import { type GroupExit, spawnCodexGroup, type StopTiming } from "./process-group.ts";
 
 export { CodexNotFoundError } from "./process-group.ts";
 
@@ -27,58 +19,48 @@ const MAX_STDERR_CHARS = 1_000_000;
 
 const SIGNAL_NUMBERS: Readonly<Record<string, number>> = { SIGINT: 2, SIGTERM: 15 };
 
-export type ModelOptions = { model?: string; effort?: string };
-
 export type CodexRunOptions = StopTiming & {
   cwd: string;
-  // Omitted: the child's stdin is closed right away.
-  stdin?: string;
+  // The whole environment of codex; process.env when omitted.
+  env?: NodeJS.ProcessEnv;
+  // Written to the child's stdin as is. Omitted: stdin is closed right away.
+  stdin?: string | Uint8Array;
   // An exception here stops codex and is returned as callbackError.
   onThreadStarted?: (threadId: string) => void;
-  // Interrupts the run like a signal would, for callers with a deadline.
-  timeoutMs?: number;
 };
 
 export type CodexRunResult = GroupExit & {
-  threadId: string | null;
-  lastAgentMessage: string | null;
   errorMessage: string | null;
   stderr: string;
   callbackError: Error | null;
 };
 
-// Passes the model and effort through unchanged, and only when given.
-export function modelArgs(options: ModelOptions): string[] {
-  const args: string[] = [];
-  if (options.model !== undefined) {
-    args.push("-m", options.model);
-  }
-  if (options.effort !== undefined) {
-    args.push("-c", `model_reasoning_effort=${JSON.stringify(options.effort)}`);
-  }
-  return args;
-}
-
 export function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (SIGNAL_NUMBERS[signal] ?? 15);
 }
+
+// The CLI's notice that it could not set up its PATH helpers (0.169.0 words
+// it "create PATH aliases", earlier versions "update PATH"); never the reason
+// for a failure.
+const PATH_WARNING = /^WARNING: proceeding, even though we could not (?:update PATH|create PATH aliases):/;
 
 export function cleanCodexStderr(stderr: string): string {
   return stderr
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
-    .filter((line) => line && !line.startsWith("WARNING: proceeding, even though we could not update PATH:"))
+    .filter((line) => line && !PATH_WARNING.test(line))
     .slice(-STDERR_TAIL_LINES)
     .join("\n");
 }
 
 // One line explaining why codex failed: the turn's error from the JSONL
-// events, else the last stderr line that mentions an error, else the last line.
-export function failureReason(result: Pick<CodexRunResult, "errorMessage" | "stderr">): string {
-  if (result.errorMessage) {
-    return result.errorMessage;
+// events, else the last line of the cleaned stderr tail that mentions an
+// error, else its last line.
+export function failureReason(errorMessage: string | null, cleanedTail: string): string {
+  if (errorMessage) {
+    return errorMessage;
   }
-  const lines = cleanCodexStderr(result.stderr).split("\n").filter(Boolean);
+  const lines = cleanedTail.split("\n").filter(Boolean);
   return lines.findLast((line) => /error/i.test(line)) ?? lines.at(-1) ?? "";
 }
 
@@ -92,15 +74,12 @@ function stringField(object: JsonObject | null, key: string): string | null {
 }
 
 export async function runCodex(args: readonly string[], options: CodexRunOptions): Promise<CodexRunResult> {
-  const group = spawnCodexGroup(args, {
-    cwd: options.cwd,
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    ...pickStopTiming(options),
-  });
+  // spawnCodexGroup reads only its own fields of the options.
+  const group = spawnCodexGroup(args, options);
   const { child } = group;
 
+  // Only to report each thread once.
   let threadId: string | null = null;
-  let lastAgentMessage: string | null = null;
   let turnFailure: string | null = null;
   let lastError: string | null = null;
   let stderr = "";
@@ -134,13 +113,6 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
         }
         break;
       }
-      case "item.completed": {
-        const item = asObject(event.item);
-        if (item?.type === "agent_message") {
-          lastAgentMessage = stringField(item, "text") ?? lastAgentMessage;
-        }
-        break;
-      }
       case "turn.failed":
         turnFailure ??= stringField(asObject(event.error), "message");
         break;
@@ -160,8 +132,6 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
     const exit = await group.exited;
     return {
       ...exit,
-      threadId,
-      lastAgentMessage,
       errorMessage: turnFailure ?? lastError,
       stderr,
       callbackError,
@@ -169,21 +139,4 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
   } finally {
     lines.close();
   }
-}
-
-// A run whose process group could not be reaped is never a success.
-export function ensureReaped(result: Pick<GroupExit, "reapError">): void {
-  if (result.reapError !== null) {
-    throw new ReapError(result.reapError);
-  }
-}
-
-export type CodexCommandResult = { status: number | null; stdout: string; stderr: string };
-
-export function runCodexSync(args: readonly string[], cwd: string): CodexCommandResult {
-  const result = spawnSync("codex", args, { cwd, encoding: "utf8", shell: false, timeout: 30_000 });
-  if (result.error && "code" in result.error && result.error.code === "ENOENT") {
-    throw new CodexNotFoundError("codex was not found on PATH.");
-  }
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

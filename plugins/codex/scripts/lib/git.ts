@@ -5,12 +5,40 @@ import path from "node:path";
 // status is null when git could not run, was killed, or hit the timeout.
 export type GitResult = { status: number | null; stdout: string; stderr: string };
 
-export type GitOptions = { env?: NodeJS.ProcessEnv; input?: string; timeoutMs?: number };
+// env: variables set on purpose for this call, applied over gitEnv(). Never
+// pass a spread of process.env, which would bring back the variables gitEnv()
+// removes.
+export type GitOptions = { env?: Record<string, string>; input?: string; timeoutMs?: number };
 
 // Large enough for `git ls-files -z` of a big repository.
 const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
-// No git call may hang a hook or command forever.
+// No git call may hang the runner forever.
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
+
+// Variables that choose the repository, index, or object store instead of
+// letting Git find them from the working directory. A caller that runs inside
+// another repository's hook or `git -C` context can inherit them, and they
+// would then point every call, and Codex, at that repository instead of --cwd.
+// Variables that only limit discovery, such as GIT_CEILING_DIRECTORIES, stay.
+const REPOSITORY_SELECTION_VARIABLES: readonly string[] = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+// This process's environment without the repository-selection variables, so
+// Git resolves the repository from the directory it runs in. process.env
+// itself is never changed.
+export function gitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of REPOSITORY_SELECTION_VARIABLES) {
+    delete env[name];
+  }
+  return env;
+}
 
 // Repository-derived values only ever go to git as argv, never through a shell.
 export function git(cwd: string, args: readonly string[], options: GitOptions = {}): GitResult {
@@ -20,7 +48,7 @@ export function git(cwd: string, args: readonly string[], options: GitOptions = 
     shell: false,
     stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     maxBuffer: MAX_GIT_OUTPUT,
-    ...(options.env === undefined ? {} : { env: options.env }),
+    env: { ...gitEnv(), ...options.env },
     ...(options.input === undefined ? {} : { input: options.input }),
     timeout: options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
   });
@@ -31,7 +59,7 @@ export function git(cwd: string, args: readonly string[], options: GitOptions = 
 // a timeout, a broken config, a corrupt index.
 export class GitError extends Error {}
 
-function gitFailure(args: readonly string[], result: GitResult): GitError {
+export function gitFailure(args: readonly string[], result: GitResult): GitError {
   const detail = result.stderr.trim().split("\n").at(-1) ?? "";
   const reason = detail || (result.status === null ? "timed out or could not run" : `exit ${String(result.status)}`);
   return new GitError(`git ${args[0] ?? ""} failed: ${reason}`);
@@ -49,21 +77,22 @@ export function isNotGitRepository(result: GitResult): boolean {
 // is outside a repository; any other failure throws GitError.
 function revParse(cwd: string, flags: readonly string[]): string | null {
   const args = ["rev-parse", ...flags];
-  const result = git(cwd, args, { env: { ...process.env, ...C_LOCALE_ENV } });
+  const result = git(cwd, args, { env: C_LOCALE_ENV });
   if (result.status !== 0) {
     if (isNotGitRepository(result)) {
       return null;
     }
     throw gitFailure(args, result);
   }
-  const value = result.stdout.trim();
+  // Only the newline Git ends the line with: a path may end in spaces.
+  const value = result.stdout.endsWith("\n") ? result.stdout.slice(0, -1) : result.stdout;
   if (!value) {
     throw gitFailure(args, result);
   }
   return value;
 }
 
-export function gitToplevel(cwd: string): string | null {
+function gitToplevel(cwd: string): string | null {
   return revParse(cwd, ["--show-toplevel"]);
 }
 
@@ -88,43 +117,4 @@ export function canonicalWorkspaceRoot(workspaceRoot: string): string {
 // Git. Throws GitError when that cannot be told.
 export function resolveWorkspaceRoot(cwd: string): string {
   return gitToplevel(cwd) ?? cwd;
-}
-
-// Throws GitError unless `git status` finished normally.
-export function hasUncommittedChanges(cwd: string): boolean {
-  const args = ["status", "--porcelain", "--untracked-files=all"];
-  const result = git(cwd, args);
-  if (result.status !== 0) {
-    throw gitFailure(args, result);
-  }
-  return result.stdout.trim() !== "";
-}
-
-// Resolves a ref to a commit id. Values starting with "-" are refused so a ref
-// can never be read as a git option.
-export function resolveCommit(cwd: string, ref: string): string | null {
-  if (ref === "" || ref.startsWith("-")) {
-    return null;
-  }
-  const result = git(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
-  return result.status === 0 ? result.stdout.trim() || null : null;
-}
-
-export function detectDefaultBranch(cwd: string): string | null {
-  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
-  if (symbolic.status === 0) {
-    const remoteHead = symbolic.stdout.trim();
-    if (remoteHead.startsWith("refs/remotes/origin/")) {
-      return remoteHead.slice("refs/remotes/".length);
-    }
-  }
-  for (const candidate of ["main", "master", "trunk"]) {
-    if (git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]).status === 0) {
-      return candidate;
-    }
-    if (git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]).status === 0) {
-      return `origin/${candidate}`;
-    }
-  }
-  return null;
 }
