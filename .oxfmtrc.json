@@ -1,8 +1,4 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "printWidth": 120,
-  "ignorePatterns": [
-    // Prompt Markdown the plugin ships; formatting would move closing tags and reflow lists in the prompts.
-    "plugins/**/*.md"
-  ]
+  "printWidth": 120
 }
