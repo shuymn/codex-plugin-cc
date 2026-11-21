@@ -4,15 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import {
-  emptyTree,
-  headTree,
-  isTreeId,
-  sessionStartTree,
-  type Snapshot,
-  takeSnapshot,
-  treeExists,
-} from "../plugins/codex/scripts/lib/snapshot.ts";
+import { isTreeId, safeGit, type Snapshot, takeSnapshot } from "../plugins/codex/scripts/lib/snapshot.ts";
 import { git, makeFakeEnv, makeRepo, makeTempDir } from "./helpers.ts";
 
 // takeSnapshot runs git with this process's environment; give it the same
@@ -44,7 +36,6 @@ test("a clean repository snapshots to the HEAD tree", () => {
   const tree = treeOf(takeSnapshot(repo));
   assert.ok(isTreeId(tree));
   assert.equal(tree, git(repo, ["rev-parse", "HEAD^{tree}"], fake.env));
-  assert.equal(headTree(repo), tree);
 });
 
 test("tracked edits, untracked files, and deletions each change the tree; ignored files do not", () => {
@@ -79,15 +70,13 @@ test("the snapshot follows the working tree, not what is staged", () => {
   write(repo, "README.md", "staged\n");
   git(repo, ["add", "README.md"], fake.env);
   write(repo, "README.md", "hello\n");
-  assert.equal(treeOf(takeSnapshot(repo)), headTree(repo));
+  assert.equal(treeOf(takeSnapshot(repo)), git(repo, ["rev-parse", "HEAD^{tree}"], fake.env));
 });
 
 test("a repository without commits snapshots its files, and the empty tree when it has none", () => {
   const repo = makeTempDir("codex-plugin-repo-");
   git(repo, ["init", "-q", "-b", "main"], fake.env);
-  assert.equal(headTree(repo), null);
-  const empty = emptyTree(repo);
-  assert.equal(empty, "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+  const empty = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   assert.equal(treeOf(takeSnapshot(repo)), empty);
   write(repo, "a.txt", "a\n");
   assert.notEqual(treeOf(takeSnapshot(repo)), empty);
@@ -97,7 +86,6 @@ test("a directory outside Git is reported as such", () => {
   assert.deepEqual(takeSnapshot(makeTempDir()), { kind: "not-git" });
 });
 
-// EARS 11
 test("taking a snapshot leaves the index, refs, and working tree untouched", () => {
   const repo = makeRepo(fake.env);
   write(repo, "staged.txt", "staged\n");
@@ -294,7 +282,7 @@ test("a partial clone never fetches a missing object, so its remote's commands d
   git(repo, ["config", "remote.origin.promisor", "true"], fake.env);
   git(repo, ["config", "core.sshCommand", ssh.script], fake.env);
 
-  assert.equal(treeExists(repo, "0123456789abcdef0123456789abcdef01234567"), false);
+  assert.notEqual(safeGit(repo, ["cat-file", "-t", "0123456789abcdef0123456789abcdef01234567"]).status, 0);
   const tree = git(repo, ["rev-parse", "HEAD^{tree}"], fake.env);
   fs.rmSync(path.join(repo, ".git", "objects", tree.slice(0, 2), tree.slice(2)));
   assert.equal(takeSnapshot(repo).kind, "failed");
@@ -305,24 +293,10 @@ test("a partial clone never fetches a missing object, so its remote's commands d
   assert.equal(fs.existsSync(ssh.marker), true);
 });
 
-test("sessionStartTree is the HEAD tree, the empty tree before the first commit, and null outside Git", () => {
-  const repo = makeRepo(fake.env);
-  assert.equal(sessionStartTree(repo), headTree(repo));
-  const unborn = makeTempDir("codex-plugin-repo-");
-  git(unborn, ["init", "-q", "-b", "main"], fake.env);
-  assert.equal(sessionStartTree(unborn), emptyTree(unborn));
-  assert.equal(sessionStartTree(makeTempDir()), null);
-});
-
-test("treeExists and isTreeId", () => {
-  const repo = makeRepo(fake.env);
-  const tree = headTree(repo) ?? "";
-  assert.equal(treeExists(repo, tree), true);
-  assert.equal(treeExists(repo, "0123456789abcdef0123456789abcdef01234567"), false);
-  // A commit id is not a tree.
-  assert.equal(treeExists(repo, git(repo, ["rev-parse", "HEAD"], fake.env)), false);
+test("isTreeId accepts only lowercase SHA-1 and SHA-256 ids", () => {
   assert.equal(isTreeId("--help"), false);
   assert.equal(isTreeId("ABCDEF0123456789abcdef0123456789abcdef01"), false);
+  assert.equal(isTreeId("a".repeat(40)), true);
   assert.equal(isTreeId("a".repeat(64)), true);
 });
 

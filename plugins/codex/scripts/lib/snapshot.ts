@@ -3,7 +3,7 @@
 // index, so the user's index, refs, and working tree are never written. The
 // objects it writes are unreferenced loose objects that `git gc` prunes.
 //
-// The hook runs outside Codex's sandbox, so the snapshot must not start any
+// The runner takes snapshots outside Codex's sandbox, so they must not start any
 // program the repository's configuration names: every git call turns off
 // fsmonitor and hooks, files with a filter attribute make the snapshot fail,
 // every configured filter driver is turned off, and
@@ -48,8 +48,8 @@ export function isTreeId(value: unknown): value is string {
 }
 
 // --no-lazy-fetch (Git 2.45 and later) makes an older Git fail every call
-// instead of silently fetching, so the gate then reviews without a snapshot.
-function safeGit(
+// instead of silently fetching, so the change report then says unknown.
+export function safeGit(
   root: string,
   args: readonly string[],
   options: { env?: Record<string, string>; input?: string; timeoutMs?: number } = {},
@@ -225,38 +225,4 @@ export function takeSnapshot(root: string, options: SnapshotOptions = {}): Snaps
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   }
-}
-
-// The tree of HEAD, or null when HEAD has no commit yet (or outside Git).
-export function headTree(root: string): string | null {
-  const result = safeGit(root, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"]);
-  const tree = result.stdout.trim();
-  return result.status === 0 && isTreeId(tree) ? tree : null;
-}
-
-// The empty tree in the repository's hash format.
-export function emptyTree(root: string): string | null {
-  const result = safeGit(root, ["hash-object", "-t", "tree", "--stdin"], { input: "" });
-  const tree = result.stdout.trim();
-  return result.status === 0 && isTreeId(tree) ? tree : null;
-}
-
-// Whether a tree object exists; a tree approved long ago may have been pruned.
-export function treeExists(root: string, tree: string): boolean {
-  if (!isTreeId(tree)) {
-    return false;
-  }
-  const result = safeGit(root, ["cat-file", "-t", tree]);
-  return result.status === 0 && result.stdout.trim() === "tree";
-}
-
-// The tree a session starts from: HEAD's, the empty tree before the first
-// commit, or null outside Git (and when Git fails).
-export function sessionStartTree(root: string): string | null {
-  const inside = safeGit(root, ["rev-parse", "--is-inside-work-tree"]);
-  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
-    return null;
-  }
-  const head = safeGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  return head.status === 0 ? headTree(root) : emptyTree(root);
 }

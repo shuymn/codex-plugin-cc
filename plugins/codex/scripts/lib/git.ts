@@ -12,7 +12,7 @@ export type GitOptions = { env?: Record<string, string>; input?: string; timeout
 
 // Large enough for `git ls-files -z` of a big repository.
 const MAX_GIT_OUTPUT = 256 * 1024 * 1024;
-// No git call may hang a hook or command forever.
+// No git call may hang the runner forever.
 const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 
 // Variables that choose the repository, index, or object store instead of
@@ -116,43 +116,4 @@ export function canonicalWorkspaceRoot(workspaceRoot: string): string {
 // Git. Throws GitError when that cannot be told.
 export function resolveWorkspaceRoot(cwd: string): string {
   return gitToplevel(cwd) ?? cwd;
-}
-
-// Throws GitError unless `git status` finished normally.
-export function hasUncommittedChanges(cwd: string): boolean {
-  const args = ["status", "--porcelain", "--untracked-files=all"];
-  const result = git(cwd, args);
-  if (result.status !== 0) {
-    throw gitFailure(args, result);
-  }
-  return result.stdout.trim() !== "";
-}
-
-// Resolves a ref to a commit id. Values starting with "-" are refused so a ref
-// can never be read as a git option.
-export function resolveCommit(cwd: string, ref: string): string | null {
-  if (ref === "" || ref.startsWith("-")) {
-    return null;
-  }
-  const result = git(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
-  return result.status === 0 ? result.stdout.trim() || null : null;
-}
-
-export function detectDefaultBranch(cwd: string): string | null {
-  const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
-  if (symbolic.status === 0) {
-    const remoteHead = symbolic.stdout.trim();
-    if (remoteHead.startsWith("refs/remotes/origin/")) {
-      return remoteHead.slice("refs/remotes/".length);
-    }
-  }
-  for (const candidate of ["main", "master", "trunk"]) {
-    if (git(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`]).status === 0) {
-      return candidate;
-    }
-    if (git(cwd, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${candidate}`]).status === 0) {
-      return `origin/${candidate}`;
-    }
-  }
-  return null;
 }

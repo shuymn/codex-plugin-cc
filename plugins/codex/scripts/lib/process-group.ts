@@ -12,7 +12,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 const INTERRUPT_GRACE_MS = 10_000;
 const TERMINATE_GRACE_MS = 5_000;
 // How long after SIGKILL the group still gets to disappear before the
-// adapter stops waiting and reports that it could not reap it.
+// runner stops waiting and reports that it could not reap it.
 const REAP_GRACE_MS = 2_000;
 // Bounds the wait for stdout and stderr to close after the group is gone, in
 // case a process that left the group still holds them open.
@@ -21,24 +21,6 @@ const POLL_MS = 50;
 
 export class CodexNotFoundError extends Error {
   override name = "CodexNotFoundError";
-}
-
-// Thrown when the adapter received a signal and stopped the group; the
-// process should exit with 128 + n.
-export class InterruptedError extends Error {
-  override name = "InterruptedError";
-  signal: NodeJS.Signals;
-
-  constructor(signal: NodeJS.Signals) {
-    super(`interrupted by ${signal}`);
-    this.signal = signal;
-  }
-}
-
-// Codex processes may still be running: the group could not be signaled, or
-// did not disappear in time after SIGKILL.
-export class ReapError extends Error {
-  override name = "ReapError";
 }
 
 export type KillFunction = (pid: number, signal: NodeJS.Signals | 0) => void;
@@ -53,19 +35,18 @@ export type StopTiming = {
 
 export type GroupOptions = StopTiming & {
   cwd: string;
-  // Stops the group after this long and reports timedOut.
-  timeoutMs?: number;
-  // Runs first when stopping, e.g. to close stdin for a graceful shutdown.
-  onStop?: () => void;
+  // The whole environment of the spawned process; process.env when omitted.
+  env?: NodeJS.ProcessEnv;
 };
 
 export type GroupExit = {
   exitCode: number | null;
   exitSignal: NodeJS.Signals | null;
-  // The signal the adapter itself received while the group ran.
+  // The signal the runner itself received while the group ran.
   receivedSignal: NodeJS.Signals | null;
-  timedOut: boolean;
-  // Set when the group could not be reaped; the run is then not a success.
+  // Set when the group could not be reaped: the group could not be signaled,
+  // or did not disappear in time after SIGKILL, so Codex processes may still
+  // be running. The run is then not a success.
   reapError: string | null;
 };
 
@@ -107,6 +88,7 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
     shell: false,
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
+    ...(options.env === undefined ? {} : { env: options.env }),
   });
   const kill: KillFunction = options.kill ?? ((pid, signal) => process.kill(pid, signal));
   const interruptGraceMs = options.interruptGraceMs ?? INTERRUPT_GRACE_MS;
@@ -114,7 +96,6 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   const reapGraceMs = options.reapGraceMs ?? REAP_GRACE_MS;
   const timers: NodeJS.Timeout[] = [];
   let receivedSignal: NodeJS.Signals | null = null;
-  let timedOut = false;
   let stopping = false;
   let reapError: string | null = null;
   let giveUp: (() => void) | null = null;
@@ -146,11 +127,6 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
       return;
     }
     stopping = true;
-    try {
-      options.onStop?.();
-    } catch {
-      // Stopping must go on even if the graceful step fails.
-    }
     signalGroup("SIGINT");
     timers.push(
       setTimeout(() => signalGroup("SIGTERM"), interruptGraceMs),
@@ -168,14 +144,6 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
-  if (options.timeoutMs !== undefined) {
-    timers.push(
-      setTimeout(() => {
-        timedOut = true;
-        stop();
-      }, options.timeoutMs),
-    );
-  }
 
   const cleanup = (): void => {
     process.off("SIGINT", onSignal);
@@ -206,11 +174,11 @@ export function spawnCodexGroup(args: readonly string[], options: GroupOptions):
         child.stderr.destroy();
       }
       if (reapError !== null) {
-        // Do not let a process we failed to reap keep the adapter alive.
+        // Do not let a process we failed to reap keep the runner alive.
         child.stdin.destroy();
         child.unref();
       }
-      resolve({ exitCode, exitSignal, receivedSignal, timedOut, reapError });
+      resolve({ exitCode, exitSignal, receivedSignal, reapError });
     };
     giveUp = () => {
       // A group that is already gone was reaped, even if a process that left

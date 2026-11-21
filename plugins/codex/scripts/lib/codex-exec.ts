@@ -1,15 +1,7 @@
-import { spawnSync } from "node:child_process";
 import readline from "node:readline";
 
 import { isRecord, type JsonObject } from "./json.ts";
-import {
-  CodexNotFoundError,
-  type GroupExit,
-  pickStopTiming,
-  ReapError,
-  spawnCodexGroup,
-  type StopTiming,
-} from "./process-group.ts";
+import { type GroupExit, pickStopTiming, spawnCodexGroup, type StopTiming } from "./process-group.ts";
 
 export { CodexNotFoundError } from "./process-group.ts";
 
@@ -31,12 +23,12 @@ export type ModelOptions = { model?: string; effort?: string };
 
 export type CodexRunOptions = StopTiming & {
   cwd: string;
-  // Omitted: the child's stdin is closed right away.
-  stdin?: string;
+  // The whole environment of codex; process.env when omitted.
+  env?: NodeJS.ProcessEnv;
+  // Written to the child's stdin as is. Omitted: stdin is closed right away.
+  stdin?: string | Uint8Array;
   // An exception here stops codex and is returned as callbackError.
   onThreadStarted?: (threadId: string) => void;
-  // Interrupts the run like a signal would, for callers with a deadline.
-  timeoutMs?: number;
 };
 
 export type CodexRunResult = GroupExit & {
@@ -94,7 +86,7 @@ function stringField(object: JsonObject | null, key: string): string | null {
 export async function runCodex(args: readonly string[], options: CodexRunOptions): Promise<CodexRunResult> {
   const group = spawnCodexGroup(args, {
     cwd: options.cwd,
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.env === undefined ? {} : { env: options.env }),
     ...pickStopTiming(options),
   });
   const { child } = group;
@@ -169,21 +161,4 @@ export async function runCodex(args: readonly string[], options: CodexRunOptions
   } finally {
     lines.close();
   }
-}
-
-// A run whose process group could not be reaped is never a success.
-export function ensureReaped(result: Pick<GroupExit, "reapError">): void {
-  if (result.reapError !== null) {
-    throw new ReapError(result.reapError);
-  }
-}
-
-export type CodexCommandResult = { status: number | null; stdout: string; stderr: string };
-
-export function runCodexSync(args: readonly string[], cwd: string): CodexCommandResult {
-  const result = spawnSync("codex", args, { cwd, encoding: "utf8", shell: false, timeout: 30_000 });
-  if (result.error && "code" in result.error && result.error.code === "ENOENT") {
-    throw new CodexNotFoundError("codex was not found on PATH.");
-  }
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
