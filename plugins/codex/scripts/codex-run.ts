@@ -342,17 +342,20 @@ export async function main(argv: string[], io: RunnerIo): Promise<number> {
   let report: ChangeReport = { kind: "read-only" };
   let finalMs: number | undefined;
   if (baseline !== null) {
-    if (baseline.snapshot.kind !== "tree") {
-      report = snapshotProblem(baseline.snapshot, "baseline", null);
-    } else if (reapError !== null) {
+    // An interruption or a group not confirmed gone decides the report even
+    // when there is no baseline tree to name.
+    const baseTree = baseline.snapshot.kind === "tree" ? baseline.snapshot.tree : null;
+    if (reapError !== null) {
       report = {
         kind: "unknown",
         category: "reap-error",
         reason: "Codex processes may still be running",
-        baseline: baseline.snapshot.tree,
+        baseline: baseTree,
       };
     } else if (result?.receivedSignal) {
-      report = { kind: "unknown", category: "interrupted", reason: "interrupted", baseline: baseline.snapshot.tree };
+      report = { kind: "unknown", category: "interrupted", reason: "interrupted", baseline: baseTree };
+    } else if (baseline.snapshot.kind !== "tree") {
+      report = snapshotProblem(baseline.snapshot, "baseline", null);
     } else {
       const final = safeSnapshot(workspaceRoot);
       finalMs = final.ms;

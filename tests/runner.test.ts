@@ -539,3 +539,23 @@ test("an exception from the baseline snapshot is reported as unknown, and codex 
     mocked.mock.restore();
   }
 });
+
+test("a stopped run outside Git reports the interruption, not the missing baseline", async () => {
+  const fake = makeFakeEnv({ scenario: "slow" });
+  const plain = makeTempDir();
+  const ready = path.join(makeTempDir(), "ready");
+  const child = spawnRunner(["--prompt-file", writePrompt()], {
+    env: { ...fake.env, FAKE_CODEX_READY_FILE: ready },
+    cwd: plain,
+  });
+  let stdout = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  const exited = exitCodeOf(child);
+  await waitForFile(ready);
+  child.kill("SIGTERM");
+  assert.equal(await exited, 143);
+  assert.equal(outputLine(stdout, "changes"), "unknown: interrupted");
+  assert.equal(readRunLog(fake)[0]?.unknown, "interrupted");
+});
